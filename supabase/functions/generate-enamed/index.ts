@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { claudeStreamText, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -236,9 +237,8 @@ serve(async (req) => {
       distribuicao = `Distribua proporcionalmente entre as 5 áreas (~${perArea} questões cada, ${remainder > 0 ? `+${remainder} em Clínica Médica` : ""}).`;
     }
 
-    const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!GOOGLE_AI_API_KEY) {
-      throw new Error("GOOGLE_AI_API_KEY not configured");
+    if (!Deno.env.get("ANTHROPIC_API_KEY")) {
+      throw new Error("ANTHROPIC_API_KEY not configured");
     }
 
     const systemPrompt = ENAMED_PROMPT
@@ -262,8 +262,6 @@ serve(async (req) => {
       batches.push({ start: s, count: Math.min(BATCH_SIZE, numQuestions - s + 1) });
     }
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=${GOOGLE_AI_API_KEY}`;
-
     function batchUserPrompt(start: number, count: number): string {
       const end = start + count - 1;
       let p = `Gere as questões de número ${start} a ${end} (EXATAMENTE ${count} questões nesta resposta) no estilo ENAMED 2025/2026.`;
@@ -275,93 +273,48 @@ serve(async (req) => {
       return p;
     }
 
-    async function fetchBatch(start: number, count: number): Promise<Response> {
-      return await fetch(geminiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ role: "user", parts: [{ text: batchUserPrompt(start, count) }] }],
-          generationConfig: {
-            temperature: 0.55, // menor = menos drift entre casos clínicos
-            maxOutputTokens: 32000,
-          },
-        }),
-      });
-    }
-
-    // Valida o 1º lote antes de abrir o stream (pra retornar erro HTTP limpo)
-    const first = await fetchBatch(batches[0].start, batches[0].count);
-    if (!first.ok) {
-      const errorText = await first.text();
-      console.error("Gemini API error:", first.status, errorText);
-      if (first.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "Limite de requisições excedido. Tente novamente em alguns minutos." }),
-          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      return new Response(
-        JSON.stringify({ error: "Erro ao gerar questões ENAMED" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
     const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
 
-    function pumpInto(controller: ReadableStreamDefaultController, resp: Response): Promise<void> {
-      return new Promise(async (resolve) => {
-        const reader = resp.body?.getReader();
-        if (!reader) return resolve();
-        let buf = "";
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
-            let nl: number;
-            while ((nl = buf.indexOf("\n")) !== -1) {
-              const line = buf.slice(0, nl);
-              buf = buf.slice(nl + 1);
-              if (!line.startsWith("data: ")) continue;
-              const jsonStr = line.slice(6).trim();
-              if (!jsonStr) continue;
-              try {
-                const parsed = JSON.parse(jsonStr);
-                const content = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (content) {
-                  controller.enqueue(encoder.encode(
-                    `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
-                  ));
-                }
-              } catch { /* ignore partial */ }
-            }
-          }
-        } catch (e) {
-          console.error("pumpInto error:", e);
-        }
-        resolve();
-      });
+    /** Gera um lote em streaming, repassando os deltas no formato SSE do frontend. */
+    async function streamBatch(controller: ReadableStreamDefaultController, start: number, count: number): Promise<void> {
+      await claudeStreamText(
+        {
+          system: systemPrompt,
+          messages: [{ role: "user", content: batchUserPrompt(start, count) }],
+          maxTokens: 32000,
+          effort: "high",
+        },
+        (delta) => {
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`
+          ));
+        },
+      );
     }
 
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          await pumpInto(controller, first);
-          for (let i = 1; i < batches.length; i++) {
-            // Separador entre lotes garante que o parser não cole a última
-            // questão de um lote com a primeira do próximo.
-            controller.enqueue(encoder.encode(
-              `data: ${JSON.stringify({ choices: [{ delta: { content: "\n\n---\n\n" } }] })}\n\n`
-            ));
-            let resp: Response | null = null;
-            for (let attempt = 0; attempt < 2 && !resp; attempt++) {
-              const r = await fetchBatch(batches[i].start, batches[i].count);
-              if (r.ok) resp = r;
-              else { console.error("batch", i, "status", r.status); await new Promise((x) => setTimeout(x, 1500)); }
+          for (let i = 0; i < batches.length; i++) {
+            if (i > 0) {
+              // Separador entre lotes garante que o parser não cole a última
+              // questão de um lote com a primeira do próximo.
+              controller.enqueue(encoder.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: "\n\n---\n\n" } }] })}\n\n`
+              ));
             }
-            if (resp) await pumpInto(controller, resp);
+            let ok = false;
+            for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+              try {
+                await streamBatch(controller, batches[i].start, batches[i].count);
+                ok = true;
+              } catch (e) {
+                const ce = toClaudeError(e);
+                console.error("batch", i, "status", ce.status, ce.message);
+                if (!ce.retryable) break;
+                await new Promise((x) => setTimeout(x, 1500));
+              }
+            }
           }
         } catch (e) {
           console.error("enamed stream error:", e);

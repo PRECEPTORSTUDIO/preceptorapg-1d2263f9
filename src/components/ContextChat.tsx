@@ -85,10 +85,10 @@ const ContextChat = ({ context, contextLabel = 'conteúdo gerado', suggestions =
     // Prepend the context as a fake "first turn" (user message + assistant
     // acknowledgement). This gives the AI the reference content on EVERY
     // request while keeping strict user/model alternation — which the ai-chat
-    // edge function needs (Gemini rejects consecutive same-role messages).
+    // edge function expects.
     //
     // We don't send a 'system' role because the ai-chat edge function already
-    // sends its own system prompt via Gemini systemInstruction.
+    // sends its own system prompt to the Claude API.
     const contextIntro = `Estou revisando o ${contextLabel} abaixo e vou te fazer perguntas sobre o tema. Use o resumo como CONTEXTO PRINCIPAL da conversa — ele mostra qual tópico estou estudando e qual o recorte dado. Mas NÃO se limite a só repetir o que está no resumo: como você é o PreceptorMED, pode e DEVE complementar com seu conhecimento médico completo quando eu perguntar sobre:
 
 - Pontos que mais caem em prova/residência sobre o tema
@@ -157,6 +157,9 @@ ${context}
           if (jsonStr === '[DONE]') break;
           try {
             const parsed = JSON.parse(jsonStr);
+            if (parsed.meta?.finish_reason === 'ERROR' || parsed.meta?.finish_reason === 'SAFETY') {
+              throw new Error(parsed.meta.message ?? 'Erro ao processar sua pergunta.');
+            }
             const content = parsed.choices?.[0]?.delta?.content;
             if (content) {
               assistantContent += content;

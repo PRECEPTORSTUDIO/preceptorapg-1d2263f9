@@ -299,7 +299,8 @@ const ScribeNova = () => {
                 />
                 <span className="text-sm text-[#191C1D] leading-relaxed">
                   Paciente consentiu com <strong>uso do PreceptorMED</strong> para
-                  estruturar transcrição em prontuário (Google Gemini, dado
+                  estruturar transcrição em prontuário (transcrição via Google Gemini,
+                  estruturação via Claude da Anthropic; o dado
                   trafega criptografado).
                 </span>
               </label>

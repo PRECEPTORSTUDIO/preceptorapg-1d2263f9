@@ -72,6 +72,9 @@ export const useScientificMentor = () => {
           if (jsonStr === '[DONE]') break;
           try {
             const parsed = JSON.parse(jsonStr);
+            if (parsed.meta?.finish_reason === 'ERROR' || parsed.meta?.finish_reason === 'SAFETY') {
+              throw new Error(parsed.meta.message ?? 'Erro ao processar sua pergunta.');
+            }
             const content = parsed.choices?.[0]?.delta?.content;
             if (content) {
               assistantContent += content;

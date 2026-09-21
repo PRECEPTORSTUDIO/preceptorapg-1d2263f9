@@ -1,10 +1,11 @@
 // Edge Function: Explain Question
 // Recebe um questao_id de prova_questoes_importadas e retorna uma explicacao
-// academica gerada por Gemini. Cacheia o resultado em justificativa
+// academica gerada por IA (Claude). Cacheia o resultado em justificativa
 // (origem='ia') pra proxima vez.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeText, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -20,27 +21,14 @@ interface RequestBody {
   force_regenerate?: boolean;
 }
 
-async function callGemini(apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> {
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 4096,
-      },
-    }),
+async function callClaude(systemPrompt: string, userPrompt: string): Promise<string> {
+  const text = await claudeText({
+    system: systemPrompt,
+    messages: [{ role: "user", content: userPrompt }],
+    maxTokens: 4096,
+    effort: "medium",
   });
-  if (!response.ok) {
-    const t = await response.text();
-    throw new Error(`Gemini API ${response.status}: ${t.slice(0, 300)}`);
-  }
-  const json = await response.json();
-  return (json.candidates?.[0]?.content?.parts?.[0]?.text ?? "").trim();
+  return text.trim();
 }
 
 serve(async (req) => {
@@ -179,9 +167,8 @@ serve(async (req) => {
   }
 
   // Build prompt
-  const apiKey = Deno.env.get("GOOGLE_AI_API_KEY");
-  if (!apiKey) {
-    return new Response(JSON.stringify({ error: "GOOGLE_AI_API_KEY nao configurada" }), {
+  if (!Deno.env.get("ANTHROPIC_API_KEY")) {
+    return new Response(JSON.stringify({ error: "ANTHROPIC_API_KEY nao configurada" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
@@ -219,15 +206,16 @@ Use markdown limitado: **negrito** em termos chave. NAO use cabecalhos com #. Co
 
   let justificativa: string;
   try {
-    justificativa = await callGemini(apiKey, systemPrompt, userPrompt);
+    justificativa = await callClaude(systemPrompt, userPrompt);
     if (!justificativa || justificativa.length < 30) {
       throw new Error("Resposta da IA muito curta ou vazia");
     }
   } catch (err) {
+    const ce = toClaudeError(err);
     return new Response(
-      JSON.stringify({ error: (err as Error).message ?? "Falha ao gerar explicacao" }),
+      JSON.stringify({ error: ce.message ?? "Falha ao gerar explicacao" }),
       {
-        status: 502,
+        status: ce.status === 429 ? 429 : 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       },
     );

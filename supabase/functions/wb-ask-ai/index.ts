@@ -3,7 +3,7 @@
 //
 // Modos:
 // - scoped (scope_type + scope_id passados): contexto restrito ao item especifico.
-//   Sistema de prompt diz pro Gemini responder APENAS sobre aquele item.
+//   Sistema de prompt diz pra IA responder APENAS sobre aquele item.
 // - global (sem scope): faz retrieval full-text em wb_drugs/protocols/calculators/icd10
 //   e usa top resultados como contexto (RAG simples).
 //
@@ -11,6 +11,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeSseStream, fromGeminiContents, sseHeaders } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -269,10 +270,9 @@ serve(async (req) => {
     context = await buildGlobalContext(adminClient, body.query);
   }
 
-  const apiKey = Deno.env.get("GOOGLE_AI_API_KEY");
-  if (!apiKey) {
+  if (!Deno.env.get("ANTHROPIC_API_KEY")) {
     return new Response(
-      JSON.stringify({ error: "GOOGLE_AI_API_KEY nao configurada" }),
+      JSON.stringify({ error: "ANTHROPIC_API_KEY nao configurada" }),
       {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -305,67 +305,14 @@ serve(async (req) => {
   }
   contents.push({ role: "user", parts: [{ text: body.query }] });
 
-  // Gemini streaming
-  const geminiUrl =
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=${apiKey}`;
-  const response = await fetch(geminiUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents,
-      generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 4096,
-      },
-    }),
+  const stream = claudeSseStream({
+    system: systemPrompt,
+    messages: fromGeminiContents(contents),
+    maxTokens: 4096,
+    effort: "medium",
   });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    return new Response(
-      JSON.stringify({ error: `Gemini API ${response.status}: ${errText.slice(0, 200)}` }),
-      {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      },
-    );
-  }
-
-  // Transform Gemini SSE -> OpenAI-compatible SSE com buffer de linha parcial
-  const decoder = new TextDecoder();
-  let leftover = "";
-  const transformStream = new TransformStream({
-    transform(chunk, controller) {
-      const text = leftover + decoder.decode(chunk, { stream: true });
-      const lines = text.split("\n");
-      leftover = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data: ")) continue;
-        const jsonStr = trimmed.slice(6).trim();
-        if (!jsonStr) continue;
-        try {
-          const parsed = JSON.parse(jsonStr);
-          const content = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (content) {
-            controller.enqueue(
-              new TextEncoder().encode(
-                `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
-              ),
-            );
-          }
-        } catch {
-          /* partial */
-        }
-      }
-    },
-    flush(controller) {
-      controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
-    },
-  });
-
-  return new Response(response.body!.pipeThrough(transformStream), {
-    headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+  return new Response(stream, {
+    headers: { ...corsHeaders, ...sseHeaders() },
   });
 });

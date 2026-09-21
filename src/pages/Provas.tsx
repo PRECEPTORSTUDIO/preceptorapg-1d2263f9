@@ -423,7 +423,7 @@ function EmptyState({ onUpload }: { onUpload: () => void }) {
           {
             n: "02",
             t: "PreceptorMED extrai e revisa",
-            d: "Gemini 2.5 Vision lê tudo em ~30s e mantém o texto literal da prova.",
+            d: "O Claude lê o PDF em ~40s e mantém o texto literal da prova.",
           },
           {
             n: "03",

@@ -1,4 +1,4 @@
-// Edge function: gera cronograma de estudo dia-a-dia via Gemini.
+// Edge function: gera cronograma de estudo dia-a-dia via Claude.
 // Input: { prova_nome, prova_data, topicos_input, horas_dia }
 // Output: cria study_plans + study_plan_days; retorna plan_id
 //
@@ -10,6 +10,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.7";
+import { claudeJson, toClaudeError, CLAUDE_MODEL } from "../_shared/claude.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -17,7 +18,6 @@ const cors = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const GEMINI_KEY = Deno.env.get("GOOGLE_AI_API_KEY")!;
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
@@ -170,7 +170,6 @@ Deno.serve(async (req) => {
     // janelas de 25 dias (cada uma cabe folgado nos tokens). A 1ª janela
     // tambem normaliza os tópicos; as seguintes recebem essa lista.
     const CHUNK = 25;
-    const geminiURL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
 
     const baseRules = `Tipos de atividade: "fechamento" (resumo PBL, ~25-30min), "flashcards" (deck 8-12 cards, ~15-20min), "questoes" (simulado N questões 3-10, ~5min/q), "revisao_flash" (revisar flashcards, ~10-15min), "leitura" (diretrizes/Harrison, ~30min).
 Fases (já definidas em cada dia):
@@ -200,37 +199,20 @@ Gere "distribuicao" APENAS para os ${skel.length} dias informados (não invente 
       let err = "";
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await fetch(geminiURL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: sys }] },
-              contents: [{ role: "user", parts: [{ text: usr }] }],
-              generationConfig: {
-                temperature: 0.55,
-                responseMimeType: "application/json",
-                responseSchema: planSchema,
-                maxOutputTokens: 24000,
-              },
-            }),
+          const p = await claudeJson<{ topicos_normalizados: string[]; distribuicao: DiaIA[] }>({
+            system: sys,
+            messages: [{ role: "user", content: usr }],
+            jsonSchema: planSchema,
+            maxTokens: 24000,
+            effort: "high",
           });
-          if (!res.ok) {
-            err = `Gemini ${res.status}: ${await res.text().catch(() => "")}`;
-            if (res.status >= 500) { await new Promise((r) => setTimeout(r, [1000, 3000, 8000][attempt] ?? 3000)); continue; }
-            throw new Error(err);
-          }
-          const out = await res.json();
-          const fr = out?.candidates?.[0]?.finishReason;
-          let text = out?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (!text) { err = `vazia (finishReason=${fr ?? "?"})`; console.warn("[generate-study-plan]", err); continue; }
-          text = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-          if (fr === "MAX_TOKENS") { err = "MAX_TOKENS (janela truncada)"; console.warn("[generate-study-plan]", err); continue; }
-          const p = JSON.parse(text);
           if (p?.distribuicao?.length) return p;
           err = "distribuicao vazia";
         } catch (e) {
-          err = String(e);
+          const ce = toClaudeError(e);
+          err = `IA ${ce.status}: ${ce.message}`;
           console.warn("[generate-study-plan] chunk attempt", attempt, err);
+          if (!ce.retryable && ce.status !== 429) throw new Error(err);
           await new Promise((r) => setTimeout(r, [1000, 3000, 8000][attempt] ?? 3000));
         }
       }
@@ -280,7 +262,7 @@ Gere "distribuicao" APENAS para os ${skel.length} dias informados (não invente 
         horas_dia: horas,
         status: "active",
         raw_plan: parsed,
-        generation_meta: { model: "gemini-2.0-flash", windows: windows.length, chunk_days: CHUNK },
+        generation_meta: { model: CLAUDE_MODEL, windows: windows.length, chunk_days: CHUNK },
       })
       .select()
       .single();

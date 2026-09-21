@@ -78,7 +78,7 @@ const Privacidade = () => {
       <h2>4. Conteúdo Enviado a Modelos de IA</h2>
       <p>
         Para gerar respostas no chat, simulados e fechamentos, enviamos seu conteúdo (perguntas,
-        temas, casos clínicos hipotéticos) ao Google Gemini API e a serviços relacionados.{' '}
+        temas, casos clínicos hipotéticos) à API do Claude (Anthropic) e a serviços relacionados.{' '}
         <strong>
           Recomendamos fortemente que você não insira dados sensíveis de pacientes reais
           identificáveis na Plataforma.
@@ -100,7 +100,7 @@ const Privacidade = () => {
           <strong>Vercel:</strong> hospedagem da aplicação web;
         </li>
         <li>
-          <strong>Google (Gemini API):</strong> processamento das requisições de IA;
+          <strong>Anthropic (Claude API):</strong> processamento das requisições de IA;
         </li>
         <li>
           <strong>EasyFlow / Stripe:</strong> processamento de pagamentos;

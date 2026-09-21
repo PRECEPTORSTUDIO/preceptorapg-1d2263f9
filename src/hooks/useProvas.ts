@@ -164,7 +164,7 @@ export async function uploadAndIngestProva(
 
   // 2) Extrai texto do PDF pagina-a-pagina no proprio browser.
   //    Pra PDFs digitais (>99% das provas modernas) isso eh muito mais
-  //    rapido que mandar o PDF pra Gemini Vision e processar 100+
+  //    rapido que mandar o PDF pra IA e processar 100+
   //    paginas no servidor — risco de timeout (HTTP 546 WORKER_LIMIT).
   onProgress?.("extracting_text");
   const pages = await extractTextByPage(pdfFile);

@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { claudeJson, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -225,49 +226,30 @@ serve(async (req) => {
       promptText = LEGACY_PROMPT + "\n\n---\n\nCONTEÚDO:\n\n" + trimmedContent;
     }
 
-    const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!GOOGLE_AI_API_KEY) {
-      throw new Error("GOOGLE_AI_API_KEY not configured");
-    }
-
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GOOGLE_AI_API_KEY}`;
-
-    const response = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: promptText }] }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 8192,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini API error:", response.status, errorText);
+    let rawFlashcards: unknown;
+    try {
+      rawFlashcards = await claudeJson({
+        messages: [{ role: "user", content: promptText }],
+        jsonOnly: true,
+        maxTokens: 8192,
+        effort: "medium",
+      });
+    } catch (e) {
+      const ce = toClaudeError(e);
+      console.error("Claude API error:", ce.status, ce.message);
       throw new Error("Erro ao gerar flashcards com IA");
     }
 
-    const result = await response.json();
-    const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-    // Extract JSON from response (handle markdown code blocks)
-    let jsonStr = rawText.trim();
-    const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      console.error("Could not parse flashcards JSON:", rawText.slice(0, 500));
-      throw new Error("Formato de resposta inválido da IA");
-    }
-    jsonStr = jsonMatch[0];
-
+    // Aceita array direto ou objeto que embrulhe o array (ex.: {flashcards: [...]})
     let flashcards: Array<{ front: string; back: string; area?: string; secao?: string }>;
-    try {
-      flashcards = JSON.parse(jsonStr);
-    } catch {
-      console.error("JSON parse error:", jsonStr.slice(0, 500));
-      throw new Error("Erro ao interpretar resposta da IA");
+    if (Array.isArray(rawFlashcards)) {
+      flashcards = rawFlashcards;
+    } else if (rawFlashcards && typeof rawFlashcards === "object") {
+      const firstArray = Object.values(rawFlashcards as Record<string, unknown>).find(Array.isArray);
+      flashcards = (firstArray as typeof flashcards) ?? [];
+    } else {
+      console.error("Formato de resposta inválido da IA:", JSON.stringify(rawFlashcards).slice(0, 500));
+      throw new Error("Formato de resposta inválido da IA");
     }
 
     if (!Array.isArray(flashcards) || flashcards.length === 0) {

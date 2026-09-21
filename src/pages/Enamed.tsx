@@ -425,7 +425,7 @@ const Enamed = () => {
                     <label className="text-[10.5px] font-bold uppercase tracking-[0.16em] text-[#4a5568] inline-flex items-center gap-2">
                       ③ Questões inéditas PreceptorMED
                       <span className="text-[9.5px] font-medium normal-case tracking-normal text-[#94a3b8]">
-                        geradas por Gemini 2.5
+                        geradas por Claude
                       </span>
                     </label>
                   </div>
@@ -578,7 +578,7 @@ const Enamed = () => {
                     </li>
                     <li className="flex gap-2.5">
                       <span className="shrink-0 h-5 w-5 rounded-full bg-[#C9A84C] text-white text-[10px] font-bold flex items-center justify-center">4</span>
-                      <span><strong className="text-[#191C1D]">Inéditas PreceptorMED</strong> nos dias em que terminar o banco — Gemini gera novos cenários no padrão INEP.</span>
+                      <span><strong className="text-[#191C1D]">Inéditas PreceptorMED</strong> nos dias em que terminar o banco — o Claude gera novos cenários no padrão INEP.</span>
                     </li>
                   </ol>
                 </div>

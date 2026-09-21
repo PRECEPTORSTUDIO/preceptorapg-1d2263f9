@@ -383,7 +383,7 @@ const Landing = () => {
                   icon: 'forum',
                   title: 'Chat com PubMed integrado',
                   desc: 'PreceptorMED busca artigos na PubMed, resume em português e cita fontes inline. Não é busca cega. É síntese com evidência.',
-                  meta: 'Gemini 2.5 + E-utilities',
+                  meta: 'Claude + E-utilities',
                 },
                 {
                   icon: 'style',

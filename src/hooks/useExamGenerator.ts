@@ -102,6 +102,9 @@ export const useExamGenerator = () => {
 
               try {
                 const parsed = JSON.parse(jsonStr);
+                if (parsed.meta?.finish_reason === 'ERROR' || parsed.meta?.finish_reason === 'SAFETY') {
+                  throw new Error(parsed.meta.message ?? 'Erro ao gerar a prova.');
+                }
                 const content = parsed.choices?.[0]?.delta?.content;
                 if (content) {
                   if (!started) {

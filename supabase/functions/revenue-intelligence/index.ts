@@ -1,11 +1,12 @@
 // Edge Function: Revenue Intelligence
-// Analisa receita/subscricoes/churn dos ultimos 3 meses e pede ao Gemini
+// Analisa receita/subscricoes/churn dos ultimos 3 meses e pede ao Claude
 // pra resumir tendencias + prever MRR dos proximos 3 meses.
 //
 // Rate limit: 1 analise por admin por hora (cache em revenue_intelligence_cache).
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeText, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -43,8 +44,7 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    const GEMINI_KEY = Deno.env.get("GOOGLE_AI_API_KEY") ?? "";
-    if (!GEMINI_KEY) return json({ error: "GOOGLE_AI_API_KEY nao configurado" }, 500);
+    if (!Deno.env.get("ANTHROPIC_API_KEY")) return json({ error: "ANTHROPIC_API_KEY nao configurado" }, 500);
 
     const { force = false } = await req.json().catch(() => ({}));
 
@@ -76,7 +76,7 @@ serve(async (req) => {
     const inad = inadRes.data ?? [];
     const logs = logsRes.data ?? [];
 
-    // Agrega em summary compacto (nao manda o dataset cru pro Gemini)
+    // Agrega em summary compacto (nao manda o dataset cru pro Claude)
     const mrr = subs.filter((s: any) => s.status === "active").reduce((sum: number, s: any) => {
       if (s.plan_type === "monthly") return sum + 49.90;
       if (s.plan_type === "annual") return sum + 350.90 / 12;
@@ -149,33 +149,24 @@ serve(async (req) => {
       },
     };
 
-    // Chama Gemini
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [{
-            role: "user",
-            parts: [{
-              text: `Analise estes dados e gere o relatorio seguindo o formato especificado:\n\n\`\`\`json\n${JSON.stringify(summary, null, 2)}\n\`\`\``,
-            }],
-          }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 2000 },
-        }),
-      },
-    );
-
-    if (!geminiRes.ok) {
-      const errText = await geminiRes.text();
-      console.error("[revenue-intelligence] Gemini error:", errText);
-      return json({ error: `Gemini API falhou: ${geminiRes.status}` }, 500);
+    // Chama Claude
+    let content: string;
+    try {
+      content = await claudeText({
+        system: SYSTEM_PROMPT,
+        messages: [{
+          role: "user",
+          content: `Analise estes dados e gere o relatorio seguindo o formato especificado:\n\n\`\`\`json\n${JSON.stringify(summary, null, 2)}\n\`\`\``,
+        }],
+        maxTokens: 2000,
+        effort: "medium",
+      });
+    } catch (e) {
+      const ce = toClaudeError(e);
+      console.error("[revenue-intelligence] Claude error:", ce.status, ce.message);
+      return json({ error: `Claude API falhou: ${ce.status}` }, 500);
     }
-
-    const gemData = await geminiRes.json();
-    const content = gemData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "(resposta vazia do modelo)";
+    if (!content) content = "(resposta vazia do modelo)";
 
     // Salva no cache
     await supabase.from("revenue_intelligence_cache").insert({

@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { claudeSseStream, pdfBlock, textBlock, type ClaudeContentBlock } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -349,7 +350,7 @@ serve(async (req) => {
 
     // Smart truncation: keep headings + key content from each topic.
     // Quando user enviou apenas materias/PDFs (sem texto base), construimos
-    // um placeholder textual a partir das materias — Gemini ainda usa os PDFs
+    // um placeholder textual a partir das materias — a IA ainda usa os PDFs
     // anexados como fonte primaria.
     let sanitizedConteudo: string = typeof conteudo === "string" && conteudo.trim()
       ? conteudo
@@ -361,7 +362,7 @@ serve(async (req) => {
       const topics = conteudo.split(/\n---\n|\n#{2}\s/);
       const maxPerTopic = Math.floor(MAX_CONTENT_LENGTH / Math.max(topics.length, 1));
 
-      sanitizedConteudo = topics.map(topic => {
+      sanitizedConteudo = topics.map((topic: string) => {
         if (topic.length <= maxPerTopic) return topic;
         const lines = topic.split('\n');
         const kept: string[] = [];
@@ -393,9 +394,8 @@ serve(async (req) => {
 
     sanitizedConteudo = sanitizedConteudo.trim().replace(/[\x00-\x1F\x7F]/g, "");
 
-    const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!GOOGLE_AI_API_KEY) {
-      throw new Error("GOOGLE_AI_API_KEY is not configured");
+    if (!Deno.env.get("ANTHROPIC_API_KEY")) {
+      throw new Error("ANTHROPIC_API_KEY is not configured");
     }
 
     const nivelLabel = sanitizedNivel === "basico" ? "Ciclo Básico" : "Residência/Internato";
@@ -439,11 +439,9 @@ ${sanitizedConteudo}
 - NÃO pare antes de completar a questão ${numQuestions}`;
     }
 
-    // Anexa PDFs como inlineData parts (Gemini multimodal) — fonte preferencial
+    // Anexa PDFs como blocos `document` (Claude multimodal) — fonte preferencial
     // sobre conhecimento geral. Bloco de instrucao injetado no prompt do user.
-    const attachmentParts = pdfs.map(p => ({
-      inlineData: { mimeType: p.mimeType, data: p.data },
-    }));
+    const attachmentBlocks: ClaudeContentBlock[] = pdfs.map(p => pdfBlock(p.data, p.name || undefined));
 
     let finalUserPrompt = userPrompt;
     if (pdfs.length > 0) {
@@ -460,71 +458,15 @@ Regras:
 3. As materias/temas fornecidos pelo estudante (se houver) ainda devem ser cobertos — combine PDFs + materias na elaboracao.`;
     }
 
-    // Call Google Gemini API with SSE streaming
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=${GOOGLE_AI_API_KEY}`;
-
-    const response = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [
-          { role: "user", parts: [...attachmentParts, { text: finalUserPrompt }] },
-        ],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 65536,
-        },
-      }),
+    // Chamada ao Claude em streaming, no formato SSE que o frontend consome
+    const stream = claudeSseStream({
+      system: systemPrompt,
+      messages: [{ role: "user", content: [...attachmentBlocks, textBlock(finalUserPrompt)] }],
+      maxTokens: 64000,
+      effort: "high",
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Google Gemini API error:", response.status, errorText);
-
-      if (response.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "Limite de requisições excedido. Tente novamente em alguns minutos." }),
-          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      return new Response(
-        JSON.stringify({ error: "Erro ao gerar conteúdo" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Transform Gemini SSE to OpenAI-compatible format
-    const transformStream = new TransformStream({
-      transform(chunk, controller) {
-        const text = new TextDecoder().decode(chunk);
-        const lines = text.split("\n");
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const jsonStr = line.slice(6).trim();
-          if (!jsonStr) continue;
-
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (content) {
-              const openAiChunk = { choices: [{ delta: { content } }] };
-              controller.enqueue(
-                new TextEncoder().encode(`data: ${JSON.stringify(openAiChunk)}\n\n`)
-              );
-            }
-          } catch {
-            // Ignore parse errors
-          }
-        }
-      },
-      flush(controller) {
-        controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
-      },
-    });
-
-    return new Response(response.body!.pipeThrough(transformStream), {
+    return new Response(stream, {
       headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
     });
   } catch (e) {
