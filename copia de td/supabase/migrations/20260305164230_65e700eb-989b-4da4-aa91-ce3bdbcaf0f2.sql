@@ -1,1 +1,0 @@
-ALTER TABLE public.subscriptions ADD COLUMN access_expires_at timestamp with time zone DEFAULT NULL;

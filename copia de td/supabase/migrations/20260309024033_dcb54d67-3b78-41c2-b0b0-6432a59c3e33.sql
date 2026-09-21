@@ -1,1 +1,0 @@
-DELETE FROM generation_logs WHERE function_name = 'ai-chat' AND user_id = '28f23197-a9e6-4a18-9b81-04e07fc539df' AND created_at >= '2026-03-09T00:00:00Z';
