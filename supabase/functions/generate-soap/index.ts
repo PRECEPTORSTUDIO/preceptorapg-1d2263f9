@@ -1,10 +1,11 @@
 // Edge Function: generate-soap
-// Recebe consulta_id (transcript ja salvo). Le transcript, manda pra Gemini
-// 2.5 Flash com responseSchema rigido pra estruturar em SOAP (S/O/A).
+// Recebe consulta_id (transcript ja salvo). Le transcript, manda pro Claude
+// com schema rigido pra estruturar em SOAP (S/O/A).
 // Phase 4 estendera com P (Plano) + DDx + exames + prescricao.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeJson, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -213,60 +214,22 @@ serve(async (req) => {
     );
   }
 
-  const apiKey = Deno.env.get("GOOGLE_AI_API_KEY");
-  if (!apiKey) {
-    await adminClient
-      .from("consultas")
-      .update({ status: "erro", status_message: "GOOGLE_AI_API_KEY nao configurada" })
-      .eq("id", body.consulta_id);
-    return new Response(
-      JSON.stringify({ error: "GOOGLE_AI_API_KEY nao configurada" }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      },
-    );
-  }
-
   try {
-    const url =
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SOAP_SYSTEM_PROMPT }] },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: `Transcricao da consulta:\n\n${consulta.transcript}\n\nEstruture em SOAP conforme schema.`,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 16384,
-          responseMimeType: "application/json",
-          responseSchema: SOAP_RESPONSE_SCHEMA,
-        },
-      }),
-    });
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Gemini ${response.status}: ${errText.slice(0, 300)}`);
-    }
-    const json = await response.json();
-    const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error("Gemini retornou resposta vazia");
-
     let soap;
     try {
-      soap = JSON.parse(text);
+      soap = await claudeJson({
+        system: SOAP_SYSTEM_PROMPT,
+        messages: [{
+          role: "user",
+          content: `Transcricao da consulta:\n\n${consulta.transcript}\n\nEstruture em SOAP conforme schema.`,
+        }],
+        jsonSchema: SOAP_RESPONSE_SCHEMA,
+        maxTokens: 16384,
+        effort: "medium",
+      });
     } catch (e) {
-      throw new Error(`Falha parse SOAP JSON: ${(e as Error).message}`);
+      const ce = toClaudeError(e);
+      throw new Error(`IA ${ce.status}: ${ce.message.slice(0, 300)}`);
     }
 
     await adminClient

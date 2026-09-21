@@ -19,7 +19,7 @@ Live at https://thepreceptor.com.br
 
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS + shadcn/ui
 - **Backend**: Supabase (Postgres + Auth + Edge Functions in Deno)
-- **AI**: Google Gemini 2.5 Flash (via edge functions)
+- **AI**: Claude (Anthropic API, `claude-sonnet-5`) via edge functions, através de `supabase/functions/_shared/claude.ts`. Exceção: `transcribe-consult` continua no Gemini porque o Claude não processa áudio
 - **Payments**: EasyFlow (Brazilian) + Stripe (secondary)
 - **Email**: Resend API
 - **Hosting**: Vercel (frontend) + Supabase (backend)
@@ -100,11 +100,12 @@ supabase/
 
 ### Edge Functions
 
-- **Gemini API**: Use `systemInstruction` (camelCase), NOT `system_instruction`. Snake_case is silently ignored and drops the entire system prompt
-- **Temperature**: Use `0.7` for factual content (summaries, exams). Never use `1.0` — causes hallucinations
+- **Claude API**: Never call the Anthropic API directly. Use the helpers in `supabase/functions/_shared/claude.ts` (`claudeText`, `claudeJson`, `claudeSseStream`, `claudeStreamText`, `pdfBlock`). Model comes from `CLAUDE_MODEL` (default `claude-sonnet-5`); one model for everything. Prompt caching is on by default (breakpoint on the system prompt + automatic on the last block), so keep system prompts stable and put volatile content in the user message
+- **No `temperature`**: Claude 5 models reject it. Control depth with `effort` (`low` for chat/extraction, `medium` default, `high` for fechamentos, exams, ENAMED, clinical cases, study plans)
+- **Structured JSON**: pass the schema in `jsonSchema` (the helper normalizes Gemini-style schemas). `jsonOnly: true` when there is no schema
 - **Auth**: Use `supabaseClient.auth.getClaims(token)` with user's Bearer token to validate
 - **Rate limiting**: Check `generation_logs` table before calling AI API (5 requests / 5 min)
-- **Streaming**: Use SSE format — transform Gemini response into `data: {choices: [{delta: {content}}]}\n\n` chunks
+- **Streaming**: `claudeSseStream` already emits the SSE format the frontend consumes (`data: {choices: [{delta: {content}}]}\n\n` + `data: [DONE]`). Extra events go in `prelude` / `onFinish`
 - **Service role**: Create separate `serviceClient` with `SUPABASE_SERVICE_ROLE_KEY` for admin ops
 
 ### Database
@@ -170,7 +171,7 @@ qnyxluevbogwwtwtbpuu
 
 1. **CRM data bugging out**: If MRR/subscribers show as 0, it's because RLS blocks client queries on `subscriptions`. Use `crm-admin-actions` edge function instead
 2. **White screen on /admin/crm**: Usually caused by JS crash in CrmAuthContext. All try-catches should be defensive
-3. **Gemini API errors**: ALWAYS use `systemInstruction` camelCase — snake_case is silently ignored
+3. **Claude API errors**: a 400 usually means `temperature` or another removed parameter was passed, or a schema with unsupported constraints. `toClaudeError` maps SDK errors to HTTP status + `retryable`
 4. **Webhook failures**: EasyFlow doesn't always send signatures. Current code logs invalid signatures but doesn't block (non-strict mode)
 5. **Screen flash on navigation**: Don't use `key={pathname}` on layout wrappers — it unmounts/remounts the whole subtree
 6. **Build chunk size**: Main bundle is 308KB after code splitting. `vendor-pdf` chunk is 618KB (heavy but rarely used)
@@ -178,13 +179,13 @@ qnyxluevbogwwtwtbpuu
 ## What NOT to do
 
 - ❌ Don't expose `SUPABASE_SERVICE_ROLE_KEY` in frontend (VITE_ prefix) — critical security issue
-- ❌ Don't concatenate `systemPrompt + userPrompt` into a single user message — use `systemInstruction` field
+- ❌ Don't concatenate `systemPrompt + userPrompt` into a single user message, and don't fake system prompts as user/assistant turns — use the `system` option
 - ❌ Don't write directly to `subscriptions` from the frontend client — RLS blocks it silently
-- ❌ Don't use `temperature: 1.0` for factual content — causes hallucinations
+- ❌ Don't pass `temperature` to Claude — the request fails with 400. Use `effort`
 - ❌ Don't add `animate-fade-up` with `opacity: 0` to layout wrappers — causes flash
 - ❌ Don't commit `.env` or `.claude/settings.local.json` — contains secrets (GitHub Push Protection will block)
 - ❌ Don't create new `crm_admin_users` flows — use existing `crm-auth` edge function pattern
-- ❌ Don't skip `systemInstruction`/prompt validation on PR — this breaks the core product silently
+- ❌ Don't skip `system` prompt validation on PR — this breaks the core product silently
 
 ## Secrets / Environment
 
@@ -194,7 +195,10 @@ Frontend `.env` (public, VITE_ prefixed):
 - `VITE_SUPABASE_PROJECT_ID`
 
 Supabase Edge Function secrets (`supabase secrets list`):
-- `GOOGLE_AI_API_KEY` (Gemini)
+- `ANTHROPIC_API_KEY` (Claude, all AI functions)
+- `CLAUDE_MODEL` (optional override, default `claude-sonnet-5`)
+- `CLAUDE_FALLBACKS` (optional, `off` disables server-side refusal fallback)
+- `GOOGLE_AI_API_KEY` (Gemini, only `transcribe-consult` audio transcription)
 - `RESEND_API_KEY` (emails)
 - `CRM_TOKEN_SECRET` (HMAC for CRM auth tokens)
 - `CRM_SERVICE_EMAIL` / `CRM_SERVICE_PASSWORD` (CRM service account)

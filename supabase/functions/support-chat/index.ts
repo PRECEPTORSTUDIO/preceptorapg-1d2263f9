@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeText, fromGeminiContents, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -44,7 +45,7 @@ Você resolve dúvidas sobre:
 - **Nota fiscal**: Emitida automaticamente e enviada por email após cada pagamento confirmado
 
 ## FECHAMENTOS DE PBL
-- Gerados por IA (Google Gemini) com rigor técnico de preceptor sênior
+- Gerados por IA (Claude) com rigor técnico de preceptor sênior
 - Digite o TEMA e OBJETIVOS do PBL e a IA gera um resumo completo
 - Limite para assinantes: 5 gerações a cada 5 minutos
 - Free users não têm acesso aos fechamentos
@@ -192,7 +193,7 @@ serve(async (req) => {
       ],
     }));
 
-    // Gemini exige que `contents` SEMPRE comece com role "user"
+    // A API exige que a conversa SEMPRE comece com role "user"
     // O frontend pode mandar a mensagem de boas-vindas do assistente como primeira,
     // entao dropamos qualquer mensagem "model" inicial ate achar um "user"
     while (sanitizedMessages.length > 0 && sanitizedMessages[0].role === "model") {
@@ -206,44 +207,27 @@ serve(async (req) => {
       );
     }
 
-    const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!GOOGLE_AI_API_KEY) {
-      throw new Error("GOOGLE_AI_API_KEY is not configured");
-    }
-
-    // IMPORTANTE: systemInstruction camelCase — snake_case e silenciosamente ignorado
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GOOGLE_AI_API_KEY}`;
-
-    const response = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: SUPPORT_SYSTEM_PROMPT }],
-        },
-        contents: sanitizedMessages,
-        generationConfig: {
-          temperature: 0.6,
-          maxOutputTokens: 1024,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini support-chat error:", response.status, errorText);
+    let assistantText: string;
+    try {
+      assistantText = await claudeText({
+        system: SUPPORT_SYSTEM_PROMPT,
+        messages: fromGeminiContents(sanitizedMessages),
+        maxTokens: 1024,
+        effort: "low",
+      });
+    } catch (e) {
+      const ce = toClaudeError(e);
+      console.error("Claude support-chat error:", ce.status, ce.message);
       return new Response(
         JSON.stringify({
           error: "Tivemos um problema temporário. Por favor, tente novamente ou contate matheus@ospreceptores.com",
         }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: ce.status === 429 ? 429 : 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-
-    const data = await response.json();
-    const assistantText =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text ??
-      "Desculpe, não consegui processar sua pergunta agora. Por favor, entre em contato em matheus@ospreceptores.com";
+    if (!assistantText.trim()) {
+      assistantText = "Desculpe, não consegui processar sua pergunta agora. Por favor, entre em contato em matheus@ospreceptores.com";
+    }
 
     // Log usage
     await serviceClient.from("generation_logs").insert({

@@ -5,6 +5,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeText, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -13,7 +14,6 @@ const corsHeaders = {
 
 const MAX_PER_IP_24H = 2;
 const GLOBAL_DAILY_CAP = 400;
-const MODEL = "gemini-2.5-flash";
 
 const SYS = `Você é um Preceptor de Medicina experiente. Gere um MINI-FECHAMENTO objetivo e correto sobre o tema, para um estudante de medicina brasileiro. Regras:
 - NUNCA invente números, doses, valores de referência ou referências. Se incerto, omita ou use "aproximadamente".
@@ -62,26 +62,20 @@ serve(async (req) => {
       return json({ error: "busy", message: "O modo demonstração atingiu o limite de hoje. Crie sua conta grátis pra gerar agora mesmo." }, 429);
     }
 
-    const KEY = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!KEY) return json({ error: "config", message: "Serviço indisponível no momento." }, 500);
+    if (!Deno.env.get("ANTHROPIC_API_KEY")) return json({ error: "config", message: "Serviço indisponível no momento." }, 500);
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYS }] },
-          contents: [{ role: "user", parts: [{ text: `Tema: ${tema}\n\nGere o mini-fechamento.` }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 2200 },
-        }),
-      },
-    );
-    if (!res.ok) {
+    let markdown = "";
+    try {
+      markdown = await claudeText({
+        system: SYS,
+        messages: [{ role: "user", content: `Tema: ${tema}\n\nGere o mini-fechamento.` }],
+        maxTokens: 2200,
+        effort: "medium",
+      });
+    } catch (e) {
+      console.error("demo-fechamento IA error:", toClaudeError(e).message);
       return json({ error: "ai", message: "Não consegui gerar agora. Tente de novo em instantes." }, 502);
     }
-    const data = await res.json();
-    const markdown: string = data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || "").join("") ?? "";
     if (!markdown.trim()) {
       return json({ error: "empty", message: "Não consegui gerar agora. Tente um tema mais específico." }, 502);
     }

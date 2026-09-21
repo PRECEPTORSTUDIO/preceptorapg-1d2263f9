@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeJson, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -178,51 +179,7 @@ serve(async (req) => {
       })
       .join("\n");
 
-    const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!GOOGLE_AI_API_KEY) {
-      throw new Error("GOOGLE_AI_API_KEY is not configured");
-    }
-
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GOOGLE_AI_API_KEY}`;
-
-    const response = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: SUMMARY_SYSTEM_PROMPT }],
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: `Analise os ${totalFeedbacks} feedbacks recebidos nos últimos ${periodDays} dias e retorne APENAS o JSON conforme especificado:\n\n${feedbackList}`,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 4096,
-          responseMimeType: "application/json",
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini summary error:", response.status, errorText);
-      return new Response(
-        JSON.stringify({ error: "Erro ao gerar resumo" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const data = await response.json();
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
-
-    let parsed: {
+    type SummaryJson = {
       executive_summary: string;
       top_themes: Array<{
         theme: string;
@@ -235,19 +192,34 @@ serve(async (req) => {
       quick_wins: string[];
     };
 
+    let parsed: SummaryJson;
     try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      // Try to extract JSON block if the model ignored responseMimeType
-      const match = rawText.match(/\{[\s\S]*\}/);
-      parsed = match
-        ? JSON.parse(match[0])
-        : {
-            executive_summary: "Não foi possível gerar o resumo automaticamente. Tente novamente.",
-            top_themes: [],
-            recommended_actions: [],
-            quick_wins: [],
-          };
+      parsed = await claudeJson<SummaryJson>({
+        system: SUMMARY_SYSTEM_PROMPT,
+        messages: [{
+          role: "user",
+          content: `Analise os ${totalFeedbacks} feedbacks recebidos nos últimos ${periodDays} dias e retorne APENAS o JSON conforme especificado:\n\n${feedbackList}`,
+        }],
+        jsonOnly: true,
+        maxTokens: 4096,
+        effort: "medium",
+      });
+    } catch (e) {
+      const ce = toClaudeError(e);
+      console.error("Claude summary error:", ce.status, ce.message);
+      if (ce.status !== 502 || !ce.message.includes("JSON")) {
+        return new Response(
+          JSON.stringify({ error: "Erro ao gerar resumo" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      // Modelo devolveu JSON invalido: mantem o fallback anterior
+      parsed = {
+        executive_summary: "Não foi possível gerar o resumo automaticamente. Tente novamente.",
+        top_themes: [],
+        recommended_actions: [],
+        quick_wins: [],
+      };
     }
 
     const { data: saved } = await serviceClient

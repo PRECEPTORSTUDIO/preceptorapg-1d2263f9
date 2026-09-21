@@ -124,6 +124,9 @@ const WhitebookAiDrawer = ({ scope, open, onClose }: Props) => {
             if (!jsonStr || jsonStr === "[DONE]") continue;
             try {
               const parsed = JSON.parse(jsonStr);
+              if (parsed.meta?.finish_reason === "ERROR" || parsed.meta?.finish_reason === "SAFETY") {
+                throw new Error(parsed.meta.message ?? "Erro ao consultar a IA.");
+              }
               const c = parsed.choices?.[0]?.delta?.content;
               if (c) {
                 accumulated += c;

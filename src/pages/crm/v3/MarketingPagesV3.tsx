@@ -462,12 +462,13 @@ export function EmailTemplatesV3() {
 /* ─── Estimativa de custo da IA ──────────────────────────────────
  * Sem token logs por chamada, estimamos custo medio por function_name
  * baseado em tokens medios observados (input + output) × precos da
- * Gemini 2.5 Flash (junho/2026: $0.30/1M input, $2.50/1M output).
+ * Claude Sonnet 5 (setembro/2026: $2.00/1M input, $10.00/1M output;
+ * com prompt caching a leitura do prefixo cacheado custa ~10% disso).
  * Multiplicado por USD_BRL pra mostrar em reais.
  */
 const USD_BRL = 5.5;
-const GEMINI_FLASH_IN_PER_1M = 0.30;
-const GEMINI_FLASH_OUT_PER_1M = 2.50;
+const CLAUDE_IN_PER_1M = 2.00;
+const CLAUDE_OUT_PER_1M = 10.00;
 
 // Tokens medios por funcao (estimado por inspecao dos prompts/outputs)
 const AVG_TOKENS: Record<string, { in: number; out: number }> = {
@@ -484,7 +485,7 @@ const FALLBACK_TOKENS = { in: 2000, out: 2000 };
 /** Custo estimado em USD de uma chamada da funcao */
 function estimateCostUsd(functionName: string): number {
   const t = AVG_TOKENS[functionName] ?? FALLBACK_TOKENS;
-  return (t.in * GEMINI_FLASH_IN_PER_1M + t.out * GEMINI_FLASH_OUT_PER_1M) / 1_000_000;
+  return (t.in * CLAUDE_IN_PER_1M + t.out * CLAUDE_OUT_PER_1M) / 1_000_000;
 }
 
 /** Custo estimado em BRL (USD × cambio) */
@@ -901,7 +902,7 @@ export function AnalyticsV3() {
             <section className="crm-card">
               <CardHead
                 title="Custo estimado de IA · 30d"
-                sub={`Baseado em tokens médios por chamada × preços Gemini 2.5 Flash · câmbio USD ${USD_BRL.toFixed(2)} BRL`}
+                sub={`Baseado em tokens médios por chamada × preços Claude Sonnet 5 · câmbio USD ${USD_BRL.toFixed(2)} BRL`}
               />
               {costStats.byFunction.length > 0 ? (
                 <table className="crm-tbl">
@@ -945,7 +946,7 @@ export function AnalyticsV3() {
                 </div>
               )}
               <div style={{ padding: "12px 20px", fontSize: 11, color: "var(--crm-ink-4)", borderTop: "1px solid var(--crm-border)", lineHeight: 1.5 }}>
-                ⚠️ <strong>Estimativa</strong> — sem token logs por chamada, usamos médias por function_name (5500 in + 12000 out pra fechamento, 3500 + 1500 pra chat, etc.). Para custo exato, ative o Cloud Billing do Gemini ou logue <code>usageMetadata.totalTokenCount</code> por chamada nas edge functions.
+                ⚠️ <strong>Estimativa</strong> — sem token logs por chamada, usamos médias por function_name (5500 in + 12000 out pra fechamento, 3500 + 1500 pra chat, etc.). Para custo exato, use o Usage & Cost do console da Anthropic ou logue <code>usage.input_tokens/output_tokens</code> por chamada nas edge functions.
               </div>
             </section>
 
@@ -1563,7 +1564,7 @@ export function SuporteV3() {
         <section className="crm-card">
           <CardHead
             title={<span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Sparkles size={15} style={{ color: "var(--crm-gold-deep)" }} /> Resumo inteligente dos feedbacks</span>}
-            sub="Análise gerada por PreceptorMED (Gemini) dos temas mais pedidos"
+            sub="Análise gerada por PreceptorMED (Claude) dos temas mais pedidos"
             side={
               summary ? (
                 <button className="crm-btn crm-btn-ghost" onClick={() => generateSummary(true)} disabled={summaryLoading}>

@@ -1,6 +1,6 @@
 // Edge Function: wb-ai-structure
 // Recebe texto bruto (bula ANVISA, diretriz, etc) e modo ('drug' ou 'protocol').
-// Manda pra Gemini 2.5 Flash com responseSchema rigido pra estruturar em JSON
+// Manda pro Claude com schema rigido pra estruturar em JSON
 // padrao do Whitebook. Salva em wb_drugs ou wb_protocols com published=false
 // (rascunho — admin revisa antes de publicar).
 //
@@ -8,6 +8,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeJson, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -185,41 +186,22 @@ function slugify(s: string): string {
     .slice(0, 80);
 }
 
-async function callGeminiStructured(
-  apiKey: string,
+async function callClaudeStructured(
   systemPrompt: string,
   userText: string,
   schema: unknown,
 ): Promise<Record<string, unknown>> {
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: "user", parts: [{ text: userText }] }],
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 8192,
-        responseMimeType: "application/json",
-        responseSchema: schema,
-      },
-    }),
-  });
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Gemini API ${response.status}: ${errText.slice(0, 300)}`);
-  }
-  const json = await response.json();
-  const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("Gemini retornou resposta vazia");
   try {
-    return JSON.parse(text);
+    return await claudeJson<Record<string, unknown>>({
+      system: systemPrompt,
+      messages: [{ role: "user", content: userText }],
+      jsonSchema: schema as Record<string, unknown>,
+      maxTokens: 8192,
+      effort: "medium",
+    });
   } catch (e) {
-    throw new Error(
-      `Falha ao parsear JSON: ${(e as Error).message}. Inicio: ${text.slice(0, 200)}`,
-    );
+    const ce = toClaudeError(e);
+    throw new Error(`IA ${ce.status}: ${ce.message.slice(0, 300)}`);
   }
 }
 
@@ -302,17 +284,6 @@ serve(async (req) => {
     );
   }
 
-  const apiKey = Deno.env.get("GOOGLE_AI_API_KEY");
-  if (!apiKey) {
-    return new Response(
-      JSON.stringify({ error: "GOOGLE_AI_API_KEY nao configurada" }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      },
-    );
-  }
-
   // Log da chamada
   void adminClient.from("generation_logs").insert({
     user_id: userId,
@@ -321,8 +292,7 @@ serve(async (req) => {
 
   try {
     if (body.mode === "drug") {
-      const data = await callGeminiStructured(
-        apiKey,
+      const data = await callClaudeStructured(
         DRUG_SYSTEM_PROMPT,
         body.raw_text,
         DRUG_RESPONSE_SCHEMA,
@@ -370,8 +340,7 @@ serve(async (req) => {
     }
 
     // mode === 'protocol'
-    const data = await callGeminiStructured(
-      apiKey,
+    const data = await callClaudeStructured(
       PROTOCOL_SYSTEM_PROMPT,
       body.raw_text,
       PROTOCOL_RESPONSE_SCHEMA,

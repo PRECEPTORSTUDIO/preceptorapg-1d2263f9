@@ -281,8 +281,8 @@ const ExamConfigPanel = ({
             {generating
               ? 'O PreceptorMED está elaborando — aguarde…'
               : isProva
-                ? `Tempo médio · ~${Math.max(10, Math.round(config.quantidade * 0.6))}s · Gemini 2.5`
-                : 'Tempo médio · ~15s · Gemini 2.5'}
+                ? `Tempo médio · ~${Math.max(10, Math.round(config.quantidade * 0.6))}s · Claude`
+                : 'Tempo médio · ~20s · Claude'}
           </p>
 
           {generating && (

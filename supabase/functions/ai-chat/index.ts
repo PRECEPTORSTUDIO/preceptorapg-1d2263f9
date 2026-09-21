@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeText, claudeSseStream, fromGeminiContents, sseHeaders, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -65,19 +66,15 @@ const MAX_MESSAGES = 50;
 // ── PubMed E-utilities (free, no API key needed) ──
 
 /**
- * Use Gemini Flash Lite to extract 3–5 English MeSH/PubMed search terms
+ * Use Claude (effort low) to extract 3–5 English MeSH/PubMed search terms
  * from a Portuguese medical question. Falls back to naive extraction on error.
  */
-async function extractEnglishSearchTerms(message: string, apiKey: string): Promise<string> {
+async function extractEnglishSearchTerms(message: string): Promise<string> {
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{
-          role: "user",
-          parts: [{ text: `You are a medical research librarian. From the Portuguese medical question below, build a precise PubMed query using 2–4 CLINICAL English MeSH terms joined by AND. The terms MUST be specific clinical medicine vocabulary (diseases, drugs, mechanisms, anatomy), NEVER generic words like "water", "treatment", "management", "study", "disease" alone.
+    const raw = await claudeText({
+      messages: [{
+        role: "user",
+        content: `You are a medical research librarian. From the Portuguese medical question below, build a precise PubMed query using 2–4 CLINICAL English MeSH terms joined by AND. The terms MUST be specific clinical medicine vocabulary (diseases, drugs, mechanisms, anatomy), NEVER generic words like "water", "treatment", "management", "study", "disease" alone.
 
 Format: term1 AND term2 AND term3
 Return ONLY the query, no explanation, no quotes, no preamble.
@@ -87,14 +84,12 @@ Examples:
 - "tratamento da hipertensão" → hypertension AND antihypertensive agents AND guidelines
 - "mecanismo dos iSGLT2" → SGLT2 inhibitors AND mechanism of action AND diabetes mellitus
 
-Question: ${message.slice(0, 400)}` }],
-        }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 200 },
-      }),
+Question: ${message.slice(0, 400)}`,
+      }],
+      maxTokens: 200,
+      effort: "low",
     });
-    if (!resp.ok) return naiveExtract(message);
-    const data = await resp.json();
-    let terms = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+    let terms = raw.trim();
     // Sanitize: drop quotes, punctuation, explanatory prefixes, newlines
     terms = terms
       .replace(/^["'`]+|["'`]+$/g, "")
@@ -433,8 +428,6 @@ serve(async (req) => {
       );
     }
 
-    const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
-
     // Get the last user message for PubMed search
     const lastUserMessage = [...messages].reverse().find((m: any) => m.role === "user")?.content ?? "";
 
@@ -447,7 +440,7 @@ serve(async (req) => {
     let pubmedArticles: PubMedArticle[] = [];
     let debugTerms = "";
     if (needsSearch) {
-      debugTerms = await extractEnglishSearchTerms(trimmed, GOOGLE_AI_API_KEY ?? "");
+      debugTerms = await extractEnglishSearchTerms(trimmed);
       console.log("PubMed search terms:", debugTerms);
       pubmedArticles = await searchPubMed(debugTerms, 5);
       pubmedContext = formatArticlesForPrompt(pubmedArticles);
@@ -470,78 +463,13 @@ serve(async (req) => {
         sanitizedMessages[lastIdx].parts[0].text += pubmedContext;
       }
     }
-    if (!GOOGLE_AI_API_KEY) {
-      throw new Error("GOOGLE_AI_API_KEY is not configured");
-    }
-
-    // Prepend system prompt to first message
-    const contents = [
-      { role: "user", parts: [{ text: systemPrompt }] },
-      { role: "model", parts: [{ text: "Ok, pronto. Vou responder proporcional à pergunta e citar PubMed sempre que possível." }] },
-      ...sanitizedMessages,
-    ];
-
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=${GOOGLE_AI_API_KEY}`;
-
-    const response = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents,
-        generationConfig: {
-          temperature: 0.5,
-          maxOutputTokens: 8192,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini error:", response.status, errorText);
-
-      if (response.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "Limite de requisições excedido. Aguarde um momento." }),
-          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      return new Response(
-        JSON.stringify({ error: "Erro ao processar sua pergunta" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Log demo usage AFTER confirming Gemini responded OK
+    // Log demo usage (best-effort, antes do stream)
     if (demoAdminClient) {
       await demoAdminClient.from("generation_logs").insert({
         user_id: userId,
         function_name: "ai-chat",
       });
     }
-
-    const transformStream = new TransformStream({
-      transform(chunk, controller) {
-        const text = new TextDecoder().decode(chunk);
-        const lines = text.split("\n");
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const jsonStr = line.slice(6).trim();
-          if (!jsonStr) continue;
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (content) {
-              controller.enqueue(
-                new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`)
-              );
-            }
-          } catch { /* ignore partial */ }
-        }
-      },
-      flush(controller) {
-        controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
-      },
-    });
 
     // Prepend a meta event with PMID -> article metadata so the frontend
     // can render tooltips with the actual title before the user clicks.
@@ -551,27 +479,20 @@ serve(async (req) => {
       journal: a.journal,
       year: a.year,
     }));
-    const metaEvent = `data: ${JSON.stringify({ type: "pubmed_meta", articles: articleMeta })}\n\n`;
-    const combined = new ReadableStream({
-      async start(controller) {
-        controller.enqueue(new TextEncoder().encode(metaEvent));
-        const reader = response.body!.pipeThrough(transformStream).getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            controller.enqueue(value);
-          }
-        } finally {
-          controller.close();
-        }
-      },
+    const metaEvent = new TextEncoder().encode(`data: ${JSON.stringify({ type: "pubmed_meta", articles: articleMeta })}\n\n`);
+
+    const combined = claudeSseStream({
+      system: systemPrompt,
+      messages: fromGeminiContents(sanitizedMessages),
+      maxTokens: 8192,
+      effort: "medium",
+      prelude: [metaEvent],
     });
 
     return new Response(combined, {
       headers: {
         ...corsHeaders,
-        "Content-Type": "text/event-stream",
+        ...sseHeaders(),
         "X-Pubmed-Terms": encodeURIComponent(debugTerms || ""),
         "X-Pubmed-Count": String(pubmedArticles.length),
         "Access-Control-Expose-Headers": "X-Pubmed-Terms, X-Pubmed-Count",
@@ -579,9 +500,10 @@ serve(async (req) => {
     });
   } catch (e) {
     console.error("ai-chat error:", e);
+    const ce = toClaudeError(e);
     return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Erro desconhecido" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({ error: ce.status === 429 ? "Limite de requisições excedido. Aguarde um momento." : (e instanceof Error ? e.message : "Erro desconhecido") }),
+      { status: ce.status === 429 ? 429 : 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });

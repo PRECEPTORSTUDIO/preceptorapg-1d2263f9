@@ -4,6 +4,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.7";
+import { claudeJson, toClaudeError } from "../_shared/claude.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -11,7 +12,6 @@ const cors = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const GEMINI_KEY = Deno.env.get("GOOGLE_AI_API_KEY")!;
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
@@ -105,41 +105,22 @@ Deno.serve(async (req) => {
     const casoText = JSON.stringify(caseRow.caso_estruturado, null, 2);
     const prompt = `Gere ${n} questão(ões) ENAMED-style baseadas neste caso:\n\n--- CASO ---\nTítulo: ${caseRow.titulo ?? "—"}\n\n${casoText}\n\nUse os campos do caso como base. Misture níveis de dificuldade. Evite questões redundantes entre si.`;
 
-    const geminiURL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`;
-
     let lastErr: string | null = null;
     let parsed: any = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await fetch(geminiURL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: SYSTEM }] },
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0.7,
-              responseMimeType: "application/json",
-              responseSchema,
-              maxOutputTokens: 16000,
-            },
-          }),
+        parsed = await claudeJson({
+          system: SYSTEM,
+          messages: [{ role: "user", content: prompt }],
+          jsonSchema: responseSchema,
+          maxTokens: 16000,
+          effort: "medium",
         });
-        if (!res.ok) {
-          lastErr = `Gemini ${res.status}: ${await res.text().catch(() => "")}`;
-          if (res.status >= 500) {
-            await new Promise((r) => setTimeout(r, [1000,3000,9000][attempt] ?? 3000));
-            continue;
-          }
-          return jsonErr(502, lastErr);
-        }
-        const out = await res.json();
-        const text = out?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!text) { lastErr = "vazia"; continue; }
-        parsed = JSON.parse(text);
         break;
       } catch (e) {
-        lastErr = String(e);
+        const ce = toClaudeError(e);
+        lastErr = `IA ${ce.status}: ${ce.message}`;
+        if (!ce.retryable && ce.status !== 429) return jsonErr(502, lastErr);
         await new Promise((r) => setTimeout(r, [1000,3000,9000][attempt] ?? 3000));
       }
     }

@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeStreamText, pdfBlock, textBlock, toClaudeError, type ClaudeContentBlock } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -640,9 +641,8 @@ serve(async (req) => {
     const sanitizedTema = tema.trim().replace(/[\x00-\x1F\x7F]/g, "");
     const sanitizedObjetivos = objetivos ? objetivos.trim().replace(/[\x00-\x1F\x7F]/g, "") : "";
 
-    const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!GOOGLE_AI_API_KEY) {
-      throw new Error("GOOGLE_AI_API_KEY is not configured");
+    if (!Deno.env.get("ANTHROPIC_API_KEY")) {
+      throw new Error("ANTHROPIC_API_KEY is not configured");
     }
 
     // Select system prompt based on mode
@@ -669,11 +669,11 @@ Gere um fechamento de PBL COMPLETO, EXTENSO e PROFUNDO sobre este tema. Não sej
       // Parse cada linha como um objetivo separado
       const objetivosList = sanitizedObjetivos
         .split("\n")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 0);
 
       const objetivosFormatted = objetivosList
-        .map((obj, idx) => `${idx + 1}. ${obj}`)
+        .map((obj: string, idx: number) => `${idx + 1}. ${obj}`)
         .join("\n");
 
       userPrompt += `
@@ -802,160 +802,80 @@ O estudante pediu a versao REDUZIDA/ENXUTA. Isto TEM PRECEDENCIA sobre qualquer 
     }
 
     // ────────────────────────────────────────────────────────────
-    // STREAMING COM CONTINUAÇÃO AUTOMÁTICA + FALLBACK DE MODELO
+    // STREAMING COM CONTINUAÇÃO AUTOMÁTICA (Claude)
     // ────────────────────────────────────────────────────────────
-    // Padrão: gemini-2.5-flash (rápido, qualidade comprovada).
-    // Se 2.5-flash falha com 503 mesmo após 4 retries, troca pra
-    // gemini-2.5-pro (mais lento, mas robusto e qualidade superior).
-    // Continuação automática: se a passada terminar SEM finishReason=STOP,
+    // Continuação automática: se a passada terminar por max_tokens,
     // até 3 continuações com prompt "continue de onde parou".
-    // SAFETY e RECITATION abortam (não vale continuar).
-    const RETRYABLE_STATUSES = new Set([500, 502, 503, 504]);
-    const MAX_INITIAL_ATTEMPTS = 4;
+    // Recusa (SAFETY) aborta (não vale continuar). Retries de erros
+    // transitórios ficam a cargo do SDK (maxRetries no helper).
     const MAX_CONTINUATIONS = 3;
-    const MODEL_PRIMARY = "gemini-2.5-flash";
-    const MODEL_FALLBACK = "gemini-2.5-pro";
-    const buildGeminiUrl = (model: string) =>
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${GOOGLE_AI_API_KEY}`;
 
     type StreamResult = {
       finishReason: string | undefined;
       totalChars: number;
       lastText: string;        // últimos N chars escritos (pra continuação)
-      upstreamError: { code?: number; message?: string; status?: string } | null;
+      upstreamError: { code?: number; message?: string; status?: string; retryable?: boolean } | null;
       usageMetadata: unknown;
     };
 
-    // Build inline PDF parts uma vez. Anexamos apenas na primeira passada
+    // Blocos de PDF montados uma vez. Anexamos apenas na primeira passada
     // (continuacoes nao precisam reenviar — modelo continua a partir do texto).
-    const attachmentParts = artigos.map(a => ({
-      inlineData: { mimeType: a.mimeType, data: a.data },
-    }));
+    const attachmentBlocks: ClaudeContentBlock[] = artigos.map(a => pdfBlock(a.data, a.name || undefined));
 
-    /** Faz UMA call Gemini com retry; se 503 persistir após retries com
-     * o modelo primário (flash), troca pra fallback (pro) e tenta de novo. */
+    const mapStopReason = (r: string | null): string | undefined => {
+      if (r === "end_turn" || r === "stop_sequence") return "STOP";
+      if (r === "max_tokens") return "MAX_TOKENS";
+      if (r === "refusal") return "SAFETY";
+      return r ?? undefined;
+    };
+
+    /** Faz UMA call ao Claude em streaming, repassando os deltas no formato SSE do frontend. */
     async function streamOnce(
       promptText: string,
       controller: ReadableStreamDefaultController,
       encoder: TextEncoder,
       includeAttachments: boolean = false,
     ): Promise<StreamResult> {
-      const parts = includeAttachments
-        ? [...attachmentParts, { text: promptText }]
-        : [{ text: promptText }];
-      const requestBody = JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 65536,
-        },
-      });
+      const content: ClaudeContentBlock[] = includeAttachments
+        ? [...attachmentBlocks, textBlock(promptText)]
+        : [textBlock(promptText)];
 
-      let response: Response | undefined;
-      let lastInitialError = "";
-      let modelUsed = MODEL_PRIMARY;
-      let triedFallback = false;
-
-      const attemptModel = async (model: string) => {
-        const url = buildGeminiUrl(model);
-        for (let attempt = 1; attempt <= MAX_INITIAL_ATTEMPTS; attempt++) {
-          response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: requestBody,
-          });
-          if (response.ok) return true;
-          lastInitialError = await response.text().catch(() => "");
-          const retryable = RETRYABLE_STATUSES.has(response.status);
-          console.warn(`Gemini[${model}] attempt ${attempt}/${MAX_INITIAL_ATTEMPTS} failed:`, response.status, lastInitialError.slice(0, 200));
-          if (!retryable || attempt === MAX_INITIAL_ATTEMPTS) return false;
-          await new Promise((r) => setTimeout(r, 1000 * Math.pow(3, attempt - 1)));
-        }
-        return false;
-      };
-
-      // Tenta com flash
-      const flashOk = await attemptModel(MODEL_PRIMARY);
-      if (!flashOk && response && RETRYABLE_STATUSES.has(response.status)) {
-        // Flash sobrecarregado mesmo após retries — fallback pra pro
-        triedFallback = true;
-        modelUsed = MODEL_FALLBACK;
-        console.warn(`[fallback] Switching to ${MODEL_FALLBACK} after ${MODEL_PRIMARY} failed with ${response.status}`);
-        await attemptModel(MODEL_FALLBACK);
-      }
-
-      if (!response || !response.ok) {
-        return {
-          finishReason: "ERROR",
-          totalChars: 0,
-          lastText: "",
-          upstreamError: {
-            code: response?.status ?? 0,
-            message: lastInitialError.slice(0, 300) || "Sem resposta do Gemini",
-            status: response?.statusText ?? "UNAVAILABLE",
-          },
-          usageMetadata: { modelUsed, triedFallback },
-        };
-      }
-
-      // Anota qual modelo respondeu (visível em logs)
-      console.log(`[gemini] using model: ${modelUsed}${triedFallback ? " (FALLBACK)" : ""}`);
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let finishReason: string | undefined;
       let totalChars = 0;
       let lastText = "";
-      let upstreamError: StreamResult["upstreamError"] = null;
-      let usageMetadata: unknown;
-
-      const processLine = (line: string) => {
-        if (!line.startsWith("data: ")) return;
-        const jsonStr = line.slice(6).trim();
-        if (!jsonStr) return;
-        try {
-          const parsed = JSON.parse(jsonStr);
-          if (parsed.error) {
-            upstreamError = {
-              code: parsed.error.code,
-              message: parsed.error.message,
-              status: parsed.error.status,
-            };
-            return;
-          }
-          const candidate = parsed.candidates?.[0];
-          const content = candidate?.content?.parts?.[0]?.text;
-          if (candidate?.finishReason) finishReason = candidate.finishReason;
-          if (parsed.usageMetadata) usageMetadata = parsed.usageMetadata;
-          if (content) {
-            totalChars += content.length;
-            // mantém últimos 500 chars pra prompt de continuação
-            lastText = (lastText + content).slice(-500);
-            const openAiChunk = { choices: [{ delta: { content } }] };
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(openAiChunk)}\n\n`));
-          }
-        } catch {
-          /* partial JSON ignorado */
-        }
-      };
-
-      const reader = response.body!.getReader();
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-          for (const line of lines) processLine(line);
-        }
-        if (buffer.length > 0) processLine(buffer);
+        const summary = await claudeStreamText(
+          {
+            system: systemPrompt,
+            messages: [{ role: "user", content }],
+            maxTokens: 64000,
+            effort: "high",
+          },
+          (delta) => {
+            totalChars += delta.length;
+            // mantém últimos 500 chars pra prompt de continuação
+            lastText = (lastText + delta).slice(-500);
+            const openAiChunk = { choices: [{ delta: { content: delta } }] };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(openAiChunk)}\n\n`));
+          },
+        );
+        return {
+          finishReason: mapStopReason(summary.stopReason),
+          totalChars,
+          lastText,
+          upstreamError: null,
+          usageMetadata: { refusalCategory: summary.refusalCategory },
+        };
       } catch (err) {
-        console.error("upstream read failed:", err);
+        const ce = toClaudeError(err);
+        console.error("claude stream failed:", ce.status, ce.message);
+        return {
+          finishReason: "ERROR",
+          totalChars,
+          lastText,
+          upstreamError: { code: ce.status, message: ce.message.slice(0, 300), status: ce.retryable ? "UNAVAILABLE" : "", retryable: ce.retryable },
+          usageMetadata: null,
+        };
       }
-
-      return { finishReason, totalChars, lastText, upstreamError, usageMetadata };
     }
 
     // ReadableStream principal: orquestra prompt inicial + continuações
@@ -1044,16 +964,17 @@ O estudante pediu a versao REDUZIDA/ENXUTA. Isto TEM PRECEDENCIA sobre qualquer 
             let msg = lastUpstreamError.message ?? "Erro do provedor de IA";
             let retryable = false;
             if (code === 429 || status === "RESOURCE_EXHAUSTED") {
-              msg = "Quota do Gemini esgotada. Tente em 1-2 minutos.";
+              msg = "Limite de requisições da IA excedido. Tente em 1-2 minutos.";
+              retryable = true;
             } else if (code === 403 || status === "PERMISSION_DENIED") {
               msg = "Chave de API inválida ou sem permissão.";
             } else if (code === 400 || status === "INVALID_ARGUMENT") {
               msg = `Requisição inválida: ${lastUpstreamError.message ?? "verifique parâmetros"}`;
             } else if (code === 503 || code === 502 || code === 504 || status === "UNAVAILABLE") {
-              msg = "Gemini 2.5 Flash sobrecarregado. Tente em 1-2 minutos.";
+              msg = "IA sobrecarregada. Tente em 1-2 minutos.";
               retryable = true;
             } else if (code && code >= 500) {
-              msg = "Erro temporário do Gemini. Tente novamente.";
+              msg = "Erro temporário da IA. Tente novamente.";
               retryable = true;
             }
             const meta = { meta: { finish_reason: "ERROR", error_code: code, error_status: status, chars: totalCharsAll, message: msg, retryable } };

@@ -11,6 +11,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.7";
+import { claudeJson, toClaudeError, CLAUDE_MODEL } from "../_shared/claude.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -18,7 +19,6 @@ const cors = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const GEMINI_KEY = Deno.env.get("GOOGLE_AI_API_KEY")!;
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
@@ -128,7 +128,7 @@ const responseSchema = {
     evolucao: { type: "string" },
     pontos_aprendizado: { type: "array", items: { type: "string" } },
   },
-  // Sem required: Gemini é exigente com schema; deixar tudo opcional
+  // Sem required aqui: o helper Claude marca todas as propriedades como required
   // e validar no código aumenta tolerância sem perder qualidade.
 };
 
@@ -257,114 +257,39 @@ Monte o caso clínico COMPLETO E ESTRUTURADO seguindo o schema. Preserve TODOS o
 // Última mensagem de erro da IA — devolvida ao front pra debug
 let LAST_IA_ERROR = "";
 
-const MODEL_PRIMARY = "gemini-2.5-flash";
-const MODEL_FALLBACK = "gemini-2.5-pro";
-
 async function callIA(userPrompt: string): Promise<Record<string, unknown> | null> {
-  // Tenta primeiro com flash; se 5xx persistente, fallback pro pro
-  for (const model of [MODEL_PRIMARY, MODEL_FALLBACK]) {
-    const result = await callIAWithModel(userPrompt, model);
-    if (result) {
-      console.log(`[callIA-${model}] sucesso com modelo: ${model}`);
-      return result;
-    }
-    if (model === MODEL_PRIMARY) {
-      console.warn(`[callIA-${model}] flash falhou, tentando fallback ${MODEL_FALLBACK}`);
-    }
-  }
-  return null;
-}
-
-async function callIAWithModel(
-  userPrompt: string,
-  model: string,
-): Promise<Record<string, unknown> | null> {
-  const geminiURL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
   const backoffs = [800, 2000, 5000, 10000];
 
   for (let attempt = 0; attempt < backoffs.length; attempt++) {
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
-
-      const res = await fetch(geminiURL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-            responseMimeType: "application/json",
-            responseSchema,
-            maxOutputTokens: 16000,
-          },
-        }),
-        signal: controller.signal,
+      const parsed = await claudeJson<Record<string, unknown>>({
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userPrompt }],
+        jsonSchema: responseSchema,
+        maxTokens: 16000,
+        effort: "high",
+        timeoutMs: 90000,
       });
-      clearTimeout(timeoutId);
 
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        LAST_IA_ERROR = `HTTP ${res.status} (${model}): ${txt.slice(0, 300)}`;
-        console.warn(`[callIA-${model}] tentativa ${attempt + 1} falhou: ${LAST_IA_ERROR}`);
-        if (res.status >= 500 || res.status === 429) {
-          await sleep(backoffs[attempt]);
-          continue;
-        }
-        return null;
-      }
-
-      const out = await res.json();
-
-      // Verifica finish reason — IA pode ter parado por safety, length, etc
-      const candidate = out?.candidates?.[0];
-      const finishReason = candidate?.finishReason;
-      if (finishReason && finishReason !== "STOP" && finishReason !== "MAX_TOKENS") {
-        LAST_IA_ERROR = `Gemini finish reason: ${finishReason}`;
-        console.warn(`[callIA-${model}] tentativa ${attempt + 1}: ${LAST_IA_ERROR}`);
+      // Validação mínima: pelo menos titulo e queixa precisam existir
+      if (!parsed.titulo && !parsed.queixa_principal && !parsed.hda) {
+        LAST_IA_ERROR = "JSON sem campos essenciais (titulo/queixa/HDA)";
+        console.warn(`[callIA-${CLAUDE_MODEL}] tentativa ${attempt + 1}: ${LAST_IA_ERROR}`);
         await sleep(backoffs[attempt]);
         continue;
       }
-
-      const text = candidate?.content?.parts?.[0]?.text;
-      if (!text) {
-        LAST_IA_ERROR = "resposta vazia da Gemini";
-        console.warn(`[callIA-${model}] tentativa ${attempt + 1}: ${LAST_IA_ERROR}`);
-        await sleep(backoffs[attempt]);
-        continue;
-      }
-
-      let cleanText = text.trim();
-      if (cleanText.startsWith("```")) {
-        cleanText = cleanText.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-      }
-
-      try {
-        const parsed = JSON.parse(cleanText) as Record<string, unknown>;
-        // Validação mínima: pelo menos titulo e queixa precisam existir
-        if (!parsed.titulo && !parsed.queixa_principal && !parsed.hda) {
-          LAST_IA_ERROR = "JSON sem campos essenciais (titulo/queixa/HDA)";
-          console.warn(`[callIA-${model}] tentativa ${attempt + 1}: ${LAST_IA_ERROR}`);
-          await sleep(backoffs[attempt]);
-          continue;
-        }
-        return parsed;
-      } catch (parseErr) {
-        LAST_IA_ERROR = `JSON parse: ${String(parseErr)}`;
-        console.warn(`[callIA-${model}] tentativa ${attempt + 1}: ${LAST_IA_ERROR} | text: ${cleanText.slice(0, 200)}`);
-        await sleep(backoffs[attempt]);
-      }
+      console.log(`[callIA-${CLAUDE_MODEL}] sucesso`);
+      return parsed;
     } catch (e) {
-      const isAbort = (e as Error).name === "AbortError";
-      LAST_IA_ERROR = isAbort
-        ? "timeout (90s)"
-        : String((e as Error).message ?? e);
-      console.warn(`[callIA-${model}] tentativa ${attempt + 1} exception: ${LAST_IA_ERROR}`);
+      const ce = toClaudeError(e);
+      LAST_IA_ERROR = `HTTP ${ce.status} (${CLAUDE_MODEL}): ${ce.message.slice(0, 300)}`;
+      console.warn(`[callIA-${CLAUDE_MODEL}] tentativa ${attempt + 1} falhou: ${LAST_IA_ERROR}`);
+      // 4xx definitivos (exceto 429) não adianta repetir
+      if (!ce.retryable && ce.status !== 429 && ce.status < 500) return null;
       await sleep(backoffs[attempt]);
     }
   }
-  console.error(`[callIA-${model}] FALHA após ${backoffs.length} tentativas: ${LAST_IA_ERROR}`);
+  console.error(`[callIA-${CLAUDE_MODEL}] FALHA após ${backoffs.length} tentativas: ${LAST_IA_ERROR}`);
   return null;
 }
 

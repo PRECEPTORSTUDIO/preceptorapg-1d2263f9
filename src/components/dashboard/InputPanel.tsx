@@ -504,7 +504,7 @@ const InputPanel = ({
             </div>
           </button>
           <p className="text-[11px] text-[#94a3b8] text-center mt-3">
-            Tempo médio · ~20s · Gemini 2.5 + base PubMed
+            Tempo médio · ~30s · Claude + base PubMed
           </p>
 
           {generating && (

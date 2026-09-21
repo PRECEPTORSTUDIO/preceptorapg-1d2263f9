@@ -234,6 +234,10 @@ const AIChat = () => {
           if (jsonStr === '[DONE]') break;
           try {
             const parsed = JSON.parse(jsonStr);
+            if (parsed.meta?.finish_reason === 'ERROR' || parsed.meta?.finish_reason === 'SAFETY') {
+              // Erro da IA no meio do stream — o backend já traduziu a mensagem.
+              throw new Error(parsed.meta.message ?? 'Erro ao processar sua pergunta.');
+            }
             if (parsed.type === 'pubmed_meta' && Array.isArray(parsed.articles)) {
               const map: PubMedMap = {};
               for (const a of parsed.articles as PubMedArticleMeta[]) {

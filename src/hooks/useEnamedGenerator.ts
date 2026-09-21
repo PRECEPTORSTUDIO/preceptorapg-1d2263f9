@@ -108,6 +108,9 @@ export const useEnamedGenerator = () => {
 
             try {
               const parsed = JSON.parse(jsonStr);
+              if (parsed.meta?.finish_reason === 'ERROR' || parsed.meta?.finish_reason === 'SAFETY') {
+                throw new Error(parsed.meta.message ?? 'Erro ao gerar as questões.');
+              }
               const content = parsed.choices?.[0]?.delta?.content;
               if (content) {
                 if (!started) {
@@ -125,6 +128,8 @@ export const useEnamedGenerator = () => {
       } catch (err) {
         if (!(err instanceof DOMException && err.name === 'AbortError')) {
           console.warn('[ENAMED] Stream error:', err);
+          // Erro sinalizado pela IA no meio do stream: propaga pro toast.
+          if (err instanceof Error && !fullTextRef.current) throw err;
         }
       } finally {
         try { reader.cancel(); } catch { /* ignore */ }

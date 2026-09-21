@@ -1,8 +1,12 @@
 // Edge Function: transcribe-consult
 // Recebe consulta_id (audio ja foi upado pra storage 'consultas-audio').
-// Le audio, manda inline pra Gemini 2.5 Pro multimodal pra transcricao em
+// Le audio, manda inline pra Gemini 2.5 Flash multimodal pra transcricao em
 // PT-BR com diarization (MEDICO/PACIENTE). Salva transcript + dispara
 // generate-soap em sequencia.
+//
+// EXCECAO DELIBERADA: esta e a unica funcao que continua no Gemini, porque a
+// API do Claude nao aceita audio. Precisa de GOOGLE_AI_API_KEY. A etapa
+// seguinte (generate-soap) ja roda no Claude.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";

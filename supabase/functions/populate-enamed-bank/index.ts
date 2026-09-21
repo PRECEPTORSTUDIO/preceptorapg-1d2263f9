@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { claudeJson, toClaudeError } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -332,43 +333,18 @@ O formato EXATO deve ser:
   }
 ]`;
 
-    const apiKey = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!apiKey) throw new Error("GOOGLE_AI_API_KEY not set");
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.8,
-            maxOutputTokens: 30000,
-            responseMimeType: "application/json",
-          },
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Gemini API error: ${response.status} - ${errText}`);
+    let questions: unknown;
+    try {
+      questions = await claudeJson({
+        messages: [{ role: "user", content: prompt }],
+        jsonOnly: true,
+        maxTokens: 30000,
+        effort: "medium",
+      });
+    } catch (e) {
+      const ce = toClaudeError(e);
+      throw new Error(`Claude API error: ${ce.status} - ${ce.message}`);
     }
-
-    const data = await response.json();
-    let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error("Empty response from Gemini");
-
-    // Remove control characters that break JSON parsing (tabs, newlines inside strings, etc.)
-    text = text.replace(/[\x00-\x1F\x7F]/g, (ch: string) => {
-      if (ch === '\n') return '\\n';
-      if (ch === '\r') return '\\r';
-      if (ch === '\t') return '\\t';
-      return '';
-    });
-
-    const questions = JSON.parse(text);
     if (!Array.isArray(questions)) throw new Error("Response is not an array");
 
     // Get current max numero for this area
@@ -412,7 +388,7 @@ O formato EXATO deve ser:
   } catch (error) {
     console.error("Error:", error);
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

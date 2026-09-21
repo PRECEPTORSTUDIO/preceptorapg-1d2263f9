@@ -1,6 +1,6 @@
 // Edge Function: Ingest Prova
 // Recebe um prova_id (PDF ja foi upado pra storage 'provas-pdfs').
-// Le PDF, manda inline pra Gemini 2.5 Flash com prompt estruturado de extracao,
+// Le PDF, manda inline pro Claude com prompt estruturado de extracao,
 // parseia questoes e insere em prova_questoes_importadas.
 //
 // Tambem opcionalmente gera justificativas via IA pra questoes onde o PDF
@@ -8,6 +8,15 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  type ClaudeContentBlock,
+  claudeJson,
+  claudeText,
+  pdfBlock,
+  textBlock,
+  toClaudeError,
+  userMessage,
+} from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -16,7 +25,7 @@ const corsHeaders = {
 };
 
 const RATE_LIMIT_PER_DAY = 5;
-const MAX_PDF_SIZE_BYTES = 20 * 1024 * 1024; // 20MB inline cap do Gemini
+const MAX_PDF_SIZE_BYTES = 20 * 1024 * 1024; // 20MB cap pro PDF inline (limite da API do Claude e 32MB por request)
 const MAX_QUESTIONS = 200;
 
 interface ExtractedQuestion {
@@ -101,78 +110,42 @@ Exemplo CORRETO: "alternativas": ["Hipertensao essencial", "Hiperaldosteronismo 
 Exemplo ERRADO:  "alternativas": ["A) Hipertensao essencial", "B) Hiperaldosteronismo primario", ...]`;
 }
 
-async function callGeminiExtraction(
-  apiKey: string,
+async function callClaudeExtraction(
   systemPrompt: string,
   source: { type: "text"; pagesText: string } | { type: "pdf"; base64: string },
 ): Promise<ExtractionResult> {
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-
-  const userParts: Array<Record<string, unknown>> =
+  const content: ClaudeContentBlock[] =
     source.type === "text"
       ? [
-          { text: source.pagesText },
-          {
-            text:
-              "Extraia todas as questoes presentes no texto acima seguindo as regras do sistema.",
-          },
+          textBlock(source.pagesText),
+          textBlock(
+            "Extraia todas as questoes presentes no texto acima seguindo as regras do sistema.",
+          ),
         ]
       : [
-          {
-            inlineData: {
-              mimeType: "application/pdf",
-              data: source.base64,
-            },
-          },
-          {
-            text: "Extraia todas as questoes desta prova seguindo as regras.",
-          },
+          pdfBlock(source.base64),
+          textBlock("Extraia todas as questoes desta prova seguindo as regras."),
         ];
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: "user", parts: userParts }],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 65536,
-        responseMimeType: "application/json",
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Gemini API ${response.status}: ${errText.slice(0, 500)}`);
-  }
-
-  const json = await response.json();
-  const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error("Gemini retornou resposta vazia");
-  }
-
   try {
-    return JSON.parse(text) as ExtractionResult;
+    return await claudeJson<ExtractionResult>({
+      system: systemPrompt,
+      messages: [userMessage(content)],
+      jsonOnly: true,
+      maxTokens: 64000,
+      effort: "medium",
+    });
   } catch (e) {
-    throw new Error(
-      `Falha ao parsear JSON da Gemini: ${(e as Error).message}. Inicio da resposta: ${text.slice(0, 200)}`,
-    );
+    const ce = toClaudeError(e);
+    throw new Error(`Claude API ${ce.status}: ${ce.message.slice(0, 500)}`);
   }
 }
 
 async function generateJustificativaIA(
-  apiKey: string,
   enunciado: string,
   alternativas: string[],
   gabarito: string,
 ): Promise<string> {
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-
   const altLetras = alternativas.map((alt, i) =>
     `${String.fromCharCode(65 + i)}) ${alt}`
   ).join("\n");
@@ -180,29 +153,18 @@ async function generateJustificativaIA(
   const prompt =
     `Questao de prova de medicina:\n\n${enunciado}\n\n${altLetras}\n\nGabarito oficial: ${gabarito}\n\nProduza uma justificativa academica que explique por que a alternativa ${gabarito} esta correta e por que cada uma das outras esta errada. Use linguagem medica precisa, cite mecanismos fisiopatologicos e dados de evidencia quando relevante. NAO invente referencias com pagina/capitulo. Maximo 4 paragrafos densos. Comece direto pelo conteudo, sem cabecalhos.`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: {
-        parts: [
-          {
-            text:
-              "Voce e um Preceptor Academico de Medicina. Justifique respostas de questoes com rigor cientifico e clareza didatica.",
-          },
-        ],
-      },
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.4, maxOutputTokens: 2048 },
-    }),
-  });
-
-  if (!response.ok) {
+  try {
+    const text = await claudeText({
+      system:
+        "Voce e um Preceptor Academico de Medicina. Justifique respostas de questoes com rigor cientifico e clareza didatica.",
+      messages: [{ role: "user", content: prompt }],
+      maxTokens: 2048,
+      effort: "medium",
+    });
+    return text.trim();
+  } catch {
     return ""; // falha silenciosa — questao fica sem justificativa
   }
-
-  const json = await response.json();
-  return (json.candidates?.[0]?.content?.parts?.[0]?.text ?? "").trim();
 }
 
 serve(async (req) => {
@@ -300,7 +262,7 @@ serve(async (req) => {
   //   pagina-a-pagina. Roda em segundos e nao gasta CPU/memoria do worker
   //   processando OCR/Vision.
   // mode "pdf" (fallback automatico, nao implementado por agora): processaria
-  //   o PDF original via Gemini Vision quando o texto for insuficiente (scan).
+  //   o PDF original via Claude (documento) quando o texto for insuficiente (scan).
   // Modo chunk: client pode chamar varias vezes com porcoes diferentes do
   // texto. Nao limpamos questoes existentes nem mexemos no status — quem
   // orquestra eh o client. Cada chamada eh idempotente: re-inserir uma
@@ -412,21 +374,20 @@ serve(async (req) => {
   }
 
   try {
-    const apiKey = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!apiKey) throw new Error("GOOGLE_AI_API_KEY nao configurada");
+    if (!Deno.env.get("ANTHROPIC_API_KEY")) throw new Error("ANTHROPIC_API_KEY nao configurada");
 
     let result: ExtractionResult;
 
     if (mode === "text") {
       // Caminho rapido — texto ja extraido no browser via pdfjs.
-      // Concatena com marcadores de pagina e manda pra Gemini text mode.
+      // Concatena com marcadores de pagina e manda pro Claude em modo texto.
       const pagesArr = body.pages ?? [];
       const pagesText = pagesArr
         .map((p) =>
           `=== PAGINA ${p.page_num} ===\n${(p.text ?? "").trim()}`
         )
         .join("\n\n");
-      // Sanity check de tamanho — Gemini text aceita ~1M tokens input,
+      // Sanity check de tamanho — Claude aceita ~1M tokens input,
       // mas vamos cortar em ~500k chars pra evitar surpresa.
       if (pagesText.length > 500_000) {
         throw new Error(
@@ -434,7 +395,7 @@ serve(async (req) => {
         );
       }
       const systemPrompt = buildExtractionPrompt(prova.num_alternativas, true);
-      result = await callGeminiExtraction(apiKey, systemPrompt, {
+      result = await callClaudeExtraction(systemPrompt, {
         type: "text",
         pagesText,
       });
@@ -468,14 +429,14 @@ serve(async (req) => {
       }
       const pdfBase64 = btoa(binary);
       const systemPrompt = buildExtractionPrompt(prova.num_alternativas, false);
-      result = await callGeminiExtraction(apiKey, systemPrompt, {
+      result = await callClaudeExtraction(systemPrompt, {
         type: "pdf",
         base64: pdfBase64,
       });
     }
 
     if (!Array.isArray(result.questoes) || result.questoes.length === 0) {
-      throw new Error("Gemini nao extraiu nenhuma questao do PDF");
+      throw new Error("A IA nao extraiu nenhuma questao do PDF");
     }
     if (result.questoes.length > MAX_QUESTIONS) {
       throw new Error(
@@ -493,7 +454,7 @@ serve(async (req) => {
       let alternativas = (q.alternativas ?? []).map((a) =>
         String(a ?? "").trim()
       );
-      // Remove prefixo "A)" "B)" se Gemini esquecer a regra
+      // Remove prefixo "A)" "B)" se a IA esquecer a regra
       alternativas = alternativas.map((a) =>
         a.replace(/^\s*[A-Ea-e]\s*[)\.\-:]\s*/, "").trim()
       );
@@ -557,7 +518,7 @@ serve(async (req) => {
       });
     }
 
-    // Dedupe numero — se Gemini repetir, mantem ultima
+    // Dedupe numero — se a IA repetir, mantem ultima
     const byNumero = new Map<number, Record<string, unknown>>();
     for (const row of rows) byNumero.set(row.numero as number, row);
     const dedupedRows = Array.from(byNumero.values()).sort(
@@ -585,7 +546,6 @@ serve(async (req) => {
         await Promise.all(
           batch.map(async (r) => {
             const just = await generateJustificativaIA(
-              apiKey,
               r.enunciado as string,
               r.alternativas as string[],
               r.gabarito as string,

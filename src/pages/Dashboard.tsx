@@ -280,11 +280,11 @@ const Dashboard = () => {
       // auto-salva — evita salvar resumo truncado na biblioteca como se
       // estivesse completo.
       if (finishMeta?.finish_reason === 'ERROR') {
-        // Erro mid-stream do Gemini (quota/key/etc) — surfaca a mensagem
+        // Erro mid-stream do Claude (quota/key/etc) — surfaca a mensagem
         // traduzida que o backend ja preparou.
         toast({
           title: finishMeta.error_code === 429 ? 'Quota do PreceptorMED esgotada' : 'Erro do provedor PreceptorMED',
-          description: finishMeta.message ?? 'Erro desconhecido do Gemini. Cheque os logs.',
+          description: finishMeta.message ?? 'Erro desconhecido da IA. Cheque os logs.',
           variant: 'destructive',
         });
       } else if (finishMeta?.finish_reason && finishMeta.finish_reason !== 'STOP') {

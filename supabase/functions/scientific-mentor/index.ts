@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { claudeSseStream, fromGeminiContents } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -211,41 +212,17 @@ serve(async (req) => {
       parts: [{ text: typeof m.content === "string" ? m.content.slice(0, MAX_CONTENT_LENGTH).replace(/[\x00-\x1F\x7F]/g, "") : "" }],
     }));
 
-    const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
-    if (!GOOGLE_AI_API_KEY) {
-      throw new Error("GOOGLE_AI_API_KEY is not configured");
+    if (!Deno.env.get("ANTHROPIC_API_KEY")) {
+      throw new Error("ANTHROPIC_API_KEY is not configured");
     }
 
-    const contents = [
-      { role: "user", parts: [{ text: SYSTEM_PROMPT + contextPrefix }] },
-      { role: "model", parts: [{ text: "Entendido! Sou o Mentor Científico do PreceptorMED. Estou pronto para analisar seu trabalho acadêmico e fornecer orientações detalhadas. Cole seu texto ou descreva sua dúvida." }] },
-      ...sanitizedMessages,
-    ];
-
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=${GOOGLE_AI_API_KEY}`;
-
-    const response = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents,
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 16384,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini error:", response.status, errorText);
-      if (response.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "Limite de requisições excedido. Aguarde um momento." }),
-          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      throw new Error("Gemini API error");
+    // System prompt vai no campo `system`; o historico vira mensagens user/assistant.
+    const claudeMessages = fromGeminiContents(sanitizedMessages);
+    if (claudeMessages.length === 0) {
+      return new Response(
+        JSON.stringify({ error: "Mensagens são obrigatórias" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     // Log usage
@@ -265,31 +242,14 @@ serve(async (req) => {
       });
     }
 
-    const transformStream = new TransformStream({
-      transform(chunk, controller) {
-        const text = new TextDecoder().decode(chunk);
-        const lines = text.split("\n");
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const jsonStr = line.slice(6).trim();
-          if (!jsonStr) continue;
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (content) {
-              controller.enqueue(
-                new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`)
-              );
-            }
-          } catch { /* ignore partial */ }
-        }
-      },
-      flush(controller) {
-        controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
-      },
+    const stream = claudeSseStream({
+      system: SYSTEM_PROMPT + contextPrefix,
+      messages: claudeMessages,
+      maxTokens: 16384,
+      effort: "high",
     });
 
-    return new Response(response.body!.pipeThrough(transformStream), {
+    return new Response(stream, {
       headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
     });
   } catch (e) {
