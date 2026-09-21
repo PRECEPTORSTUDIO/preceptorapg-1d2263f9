@@ -462,12 +462,13 @@ export function EmailTemplatesV3() {
 /* ─── Estimativa de custo da IA ──────────────────────────────────
  * Sem token logs por chamada, estimamos custo medio por function_name
  * baseado em tokens medios observados (input + output) × precos da
- * Claude Opus 5 (setembro/2026: $5.00/1M input, $25.00/1M output).
+ * Claude Sonnet 5 (setembro/2026: $2.00/1M input, $10.00/1M output;
+ * com prompt caching a leitura do prefixo cacheado custa ~10% disso).
  * Multiplicado por USD_BRL pra mostrar em reais.
  */
 const USD_BRL = 5.5;
-const CLAUDE_IN_PER_1M = 5.00;
-const CLAUDE_OUT_PER_1M = 25.00;
+const CLAUDE_IN_PER_1M = 2.00;
+const CLAUDE_OUT_PER_1M = 10.00;
 
 // Tokens medios por funcao (estimado por inspecao dos prompts/outputs)
 const AVG_TOKENS: Record<string, { in: number; out: number }> = {
@@ -901,7 +902,7 @@ export function AnalyticsV3() {
             <section className="crm-card">
               <CardHead
                 title="Custo estimado de IA · 30d"
-                sub={`Baseado em tokens médios por chamada × preços Claude Opus 5 · câmbio USD ${USD_BRL.toFixed(2)} BRL`}
+                sub={`Baseado em tokens médios por chamada × preços Claude Sonnet 5 · câmbio USD ${USD_BRL.toFixed(2)} BRL`}
               />
               {costStats.byFunction.length > 0 ? (
                 <table className="crm-tbl">

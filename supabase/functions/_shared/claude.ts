@@ -1,20 +1,23 @@
 // Cliente compartilhado da API do Claude (Anthropic) para as edge functions.
 //
 // Todas as funcoes de IA passam por aqui. Regras:
-// - O modelo e unico e vem de CLAUDE_MODEL (default claude-opus-5).
-// - Nunca passar `temperature`: o Claude Opus 5 rejeita o parametro.
+// - O modelo e unico e vem de CLAUDE_MODEL (default claude-sonnet-5).
+// - Nunca passar `temperature`: os modelos Claude 5 rejeitam o parametro.
 //   Controle de "criatividade" e feito por prompt e por `effort`.
 // - Chamadas nao-streaming tambem usam stream internamente e esperam a
 //   mensagem final. Isso evita o timeout HTTP do SDK em max_tokens altos.
 // - Fallback server-side ligado por padrao: se o modelo recusar por
 //   classificador de seguranca, a API reexecuta em outro modelo Claude.
 //   Desligue com CLAUDE_FALLBACKS=off.
+// - Prompt caching ligado em toda chamada (`cache_control` no nivel da
+//   requisicao): o prefixo estavel (system prompt, PDFs, historico) e
+//   reaproveitado entre chamadas e cobra ~10% do preco na leitura.
 
 import Anthropic from "npm:@anthropic-ai/sdk@0.127.0";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
-export const CLAUDE_MODEL = Deno.env.get("CLAUDE_MODEL") ?? "claude-opus-5";
+export const CLAUDE_MODEL = Deno.env.get("CLAUDE_MODEL") ?? "claude-sonnet-5";
 const FALLBACKS_ON = (Deno.env.get("CLAUDE_FALLBACKS") ?? "on") !== "off";
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
@@ -209,8 +212,17 @@ function buildParams(opts: ClaudeCallOptions): Anthropic.Beta.MessageCreateParam
     messages: opts.messages,
     stream: true,
     output_config: { effort: opts.effort ?? "medium" },
+    // Prompt caching automatico: breakpoint no ultimo bloco (system +
+    // mensagens), util em chats multi-turno. Prefixos curtos (< ~1-4k tokens)
+    // sao ignorados silenciosamente pela API.
+    cache_control: { type: "ephemeral" },
   };
-  if (opts.system) params.system = opts.system;
+  if (opts.system) {
+    // Breakpoint explicito no system prompt: e o prefixo mais reaproveitado
+    // (mesmo prompt, pedidos diferentes). O breakpoint automatico abaixo
+    // cobre o historico de conversas multi-turno.
+    params.system = [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }];
+  }
   if (opts.jsonSchema) {
     (params.output_config as Record<string, unknown>).format = {
       type: "json_schema",

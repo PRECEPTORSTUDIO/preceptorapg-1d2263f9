@@ -19,7 +19,7 @@ Live at https://thepreceptor.com.br
 
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS + shadcn/ui
 - **Backend**: Supabase (Postgres + Auth + Edge Functions in Deno)
-- **AI**: Claude (Anthropic API, `claude-opus-5`) via edge functions, através de `supabase/functions/_shared/claude.ts`. Exceção: `transcribe-consult` continua no Gemini porque o Claude não processa áudio
+- **AI**: Claude (Anthropic API, `claude-sonnet-5`) via edge functions, através de `supabase/functions/_shared/claude.ts`. Exceção: `transcribe-consult` continua no Gemini porque o Claude não processa áudio
 - **Payments**: EasyFlow (Brazilian) + Stripe (secondary)
 - **Email**: Resend API
 - **Hosting**: Vercel (frontend) + Supabase (backend)
@@ -100,8 +100,8 @@ supabase/
 
 ### Edge Functions
 
-- **Claude API**: Never call the Anthropic API directly. Use the helpers in `supabase/functions/_shared/claude.ts` (`claudeText`, `claudeJson`, `claudeSseStream`, `claudeStreamText`, `pdfBlock`). Model comes from `CLAUDE_MODEL` (default `claude-opus-5`); one model for everything
-- **No `temperature`**: Claude Opus 5 rejects it. Control depth with `effort` (`low` for chat/extraction, `medium` default, `high` for fechamentos, exams, ENAMED, clinical cases, study plans)
+- **Claude API**: Never call the Anthropic API directly. Use the helpers in `supabase/functions/_shared/claude.ts` (`claudeText`, `claudeJson`, `claudeSseStream`, `claudeStreamText`, `pdfBlock`). Model comes from `CLAUDE_MODEL` (default `claude-sonnet-5`); one model for everything. Prompt caching is on by default (breakpoint on the system prompt + automatic on the last block), so keep system prompts stable and put volatile content in the user message
+- **No `temperature`**: Claude 5 models reject it. Control depth with `effort` (`low` for chat/extraction, `medium` default, `high` for fechamentos, exams, ENAMED, clinical cases, study plans)
 - **Structured JSON**: pass the schema in `jsonSchema` (the helper normalizes Gemini-style schemas). `jsonOnly: true` when there is no schema
 - **Auth**: Use `supabaseClient.auth.getClaims(token)` with user's Bearer token to validate
 - **Rate limiting**: Check `generation_logs` table before calling AI API (5 requests / 5 min)
@@ -196,7 +196,7 @@ Frontend `.env` (public, VITE_ prefixed):
 
 Supabase Edge Function secrets (`supabase secrets list`):
 - `ANTHROPIC_API_KEY` (Claude, all AI functions)
-- `CLAUDE_MODEL` (optional override, default `claude-opus-5`)
+- `CLAUDE_MODEL` (optional override, default `claude-sonnet-5`)
 - `CLAUDE_FALLBACKS` (optional, `off` disables server-side refusal fallback)
 - `GOOGLE_AI_API_KEY` (Gemini, only `transcribe-consult` audio transcription)
 - `RESEND_API_KEY` (emails)

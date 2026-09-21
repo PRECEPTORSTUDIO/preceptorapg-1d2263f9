@@ -4,7 +4,7 @@ SaaS de educação médica para estudantes brasileiros. Live em https://theprece
 
 ## Stack
 
-React 18 + Vite + TS + Tailwind + shadcn/ui (frontend) · Supabase Postgres + Edge Functions Deno (backend) · Claude Opus 5 via API da Anthropic (IA) · Vercel (deploy)
+React 18 + Vite + TS + Tailwind + shadcn/ui (frontend) · Supabase Postgres + Edge Functions Deno (backend) · Claude Sonnet 5 via API da Anthropic (IA) · Vercel (deploy)
 
 ## Desenvolvimento
 
