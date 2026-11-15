@@ -234,7 +234,7 @@ function DRETreeRow({ row, depth, collapsed, onToggle, editCell, editValue, onSt
                   type="text"
                   value={editValue}
                   onChange={(e) => onEditChange(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") onSaveEdit(); if (e.key === "Escape") onCancelEdit(); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) onSaveEdit(); if (e.key === "Escape") onCancelEdit(); }}
                   autoFocus
                   className="w-full px-1.5 py-0.5 bg-gray-800 border border-[#C9A84C] rounded text-xs text-white text-right focus:outline-none"
                 />

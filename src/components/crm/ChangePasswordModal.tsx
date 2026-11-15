@@ -92,7 +92,7 @@ export default function ChangePasswordModal({ onClose }: Props) {
                   <label className="block text-xs text-gray-400 mb-1">Senha atual</label>
                   <div className="relative">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-                    <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} required
+                    <input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} required
                       className="w-full pl-10 pr-3 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:outline-none focus:border-[#C9A84C]" />
                   </div>
                 </div>

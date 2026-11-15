@@ -177,7 +177,7 @@ function PDICard({ pdi, active }: { pdi: any; active: boolean }) {
                     {active && (
                       <div className="flex gap-1 mt-1">
                         <input value={acaoInput} onChange={(e) => setAcaoInput(e.target.value)} placeholder="Nova acao..."
-                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddAcao(c.id); } }}
+                          onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); handleAddAcao(c.id); } }}
                           className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200 focus:outline-none focus:border-[#C9A84C]" />
                         <button onClick={() => handleAddAcao(c.id)} className="px-2 py-1 rounded text-xs bg-gray-800 text-gray-400 hover:text-white">+</button>
                       </div>

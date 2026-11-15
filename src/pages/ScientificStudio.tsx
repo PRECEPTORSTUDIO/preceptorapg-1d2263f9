@@ -252,7 +252,7 @@ const ScientificStudio = () => {
   };
 
   const handleChatKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleChatSend(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); handleChatSend(); }
   };
 
   const handleCopy = async (content: string, id: string) => {
