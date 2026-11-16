@@ -495,7 +495,7 @@ const DashboardShell = () => {
                 onChange={(e) => setPhoneInput(e.target.value)}
                 className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:border-[#006D5B] focus:ring-1 focus:ring-[#006D5B]/20 transition-colors"
                 autoFocus
-                onKeyDown={(e) => { if (e.key === 'Enter' && phoneInput.trim()) handlePhoneSubmit(); }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229 && phoneInput.trim()) handlePhoneSubmit(); }}
               />
             </div>
             <button

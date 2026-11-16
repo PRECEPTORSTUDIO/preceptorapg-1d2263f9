@@ -201,7 +201,7 @@ function OneOnOneFormModal({ membroId, membros, onClose }: { membroId: string; m
             <label className="block text-xs text-gray-400 mb-1">Topicos</label>
             <div className="flex gap-2 mb-2">
               <input value={topicoInput} onChange={(e) => setTopicoInput(e.target.value)} placeholder="Adicionar topico..."
-                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTopico(); } }}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); addTopico(); } }}
                 className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:outline-none focus:border-[#C9A84C]" />
               <button type="button" onClick={addTopico} className="px-2 py-1.5 rounded-lg text-xs bg-gray-800 text-gray-400 hover:text-white">+</button>
             </div>

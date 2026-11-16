@@ -262,7 +262,7 @@ function DRETreeRow({
                   type="text"
                   value={editValue}
                   onChange={(e) => onEditChange(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") onSaveEdit(); if (e.key === "Escape") onCancelEdit(); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) onSaveEdit(); if (e.key === "Escape") onCancelEdit(); }}
                   autoFocus
                   style={{
                     width: "100%", padding: "2px 6px",

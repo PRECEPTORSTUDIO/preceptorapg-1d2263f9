@@ -71,7 +71,7 @@ export default function DemoFechamento({ onSignup }: { onSignup: () => void }) {
             type="text"
             value={tema}
             onChange={(e) => setTema(e.target.value.slice(0, 120))}
-            onKeyDown={(e) => { if (e.key === "Enter" && !loading) gerar(); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229 && !loading) gerar(); }}
             disabled={loading}
             placeholder="Ex: Insuficiência cardíaca, cetoacidose diabética…"
             className="flex-1 px-4 py-3.5 rounded-xl border-2 border-slate-200 bg-slate-50/60 text-[15px] text-brand-ink placeholder:text-slate-400 outline-none focus:border-brand-primary focus:bg-white focus:ring-4 focus:ring-brand-primary/10 transition-all disabled:opacity-60"

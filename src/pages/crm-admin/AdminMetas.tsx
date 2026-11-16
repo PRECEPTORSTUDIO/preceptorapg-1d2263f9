@@ -358,7 +358,7 @@ function KRRow({ kr, editable }: { kr: KeyResult; editable: boolean }) {
         {editable && editComment ? (
           <div className="flex-1 flex gap-1">
             <input value={comment} onChange={(e) => setComment(e.target.value)} autoFocus
-              onKeyDown={(e) => { if (e.key === "Enter") saveComment(); if (e.key === "Escape") setEditComment(false); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) saveComment(); if (e.key === "Escape") setEditComment(false); }}
               className="flex-1 px-2 py-0.5 bg-gray-800 border border-[#C9A84C] rounded text-xs text-gray-300 focus:outline-none" placeholder="Comentario semanal..." />
             <button onClick={saveComment} className="text-green-400 hover:text-green-300"><Save className="w-3 h-3" /></button>
           </div>
